@@ -1,0 +1,6 @@
+fastapi~=0.115.12
+uvicorn[standard]
+selenium~=4.32.0
+chromedriver-autoinstaller~=0.6.4
+pydantic~=2.11.4
+crawler~=0.0.2
