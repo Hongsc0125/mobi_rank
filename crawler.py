@@ -14,7 +14,7 @@ def get_driver():
 
     opts = webdriver.ChromeOptions()
     # 반드시 headless 모드로 실행
-    opts.add_argument("--headless")
+    opts.add_argument("--headless=new")
     opts.add_argument("--no-sandbox")
     opts.add_argument("--disable-dev-shm-usage")
     # service = Service(ChromeDriverManager().install())
