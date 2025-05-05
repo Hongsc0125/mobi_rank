@@ -11,7 +11,6 @@ from selenium.webdriver.chrome.options import Options
 def get_driver():
     chromedriver_autoinstaller.install()
     opts = Options()
-    # 실제 창을 띄워서 사용
     opts.add_argument("--headless=new")
     opts.add_argument("--no-sandbox")
     opts.add_argument("--disable-dev-shm-usage")
@@ -33,10 +32,12 @@ def fetch_rank_via_requests(server=None, name=""):
         sess.cookies.set(ck['name'], ck['value'])
         
     headers = {
-        "User-Agent": driver.execute_script("return navigator.userAgent;"),
-        "Accept": "*/*",
-        "Referer": list_url,
-        "X-Requested-With": "XMLHttpRequest",
+        "User-Agent":          driver.execute_script("return navigator.userAgent;"),
+        "Accept":              "*/*",
+        "Referer":             list_url,
+        "X-Requested-With":    "XMLHttpRequest",
+        "Origin":              "https://mabinogimobile.nexon.com",
+        "Content-Type":        "application/x-www-form-urlencoded; charset=UTF-8",
     }
     data = {
         "t":       "1",
