@@ -5,6 +5,8 @@ import chromedriver_autoinstaller
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
+from selenium.webdriver.chrome.service import Service
+from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 
@@ -12,14 +14,20 @@ from selenium.webdriver.support import expected_conditions as EC
 def get_driver():
     chromedriver_autoinstaller.install()
 
+    opts = Options()
     opts = webdriver.ChromeOptions()
     # 반드시 headless 모드로 실행
-    opts.add_argument("--headless=new")
+    opts.add_argument("--headless")
     opts.add_argument("--no-sandbox")
     opts.add_argument("--disable-dev-shm-usage")
     # service = Service(ChromeDriverManager().install())
-    drv = webdriver.Chrome(options=opts)
-    return drv
+
+    opts.binary_location = "/usr/bin/google-chrome"
+
+    return webdriver.Chrome(
+        service=Service("/usr/bin/chromedriver"),
+        options=opts
+    )
 
 def search_character(server_name: str, character_name: str, wait_sec: float = 10):
     URL = "https://mabinogimobile.nexon.com/Ranking/List?t=1"
@@ -48,12 +56,12 @@ def search_character(server_name: str, character_name: str, wait_sec: float = 10
         (By.CSS_SELECTOR, f'dd[data-charactername="{character_name}"]')
     ))
 
-    # 3) 결과 li 추출
+    # 결과 li 요소
     li = dd.find_element(By.XPATH, "./ancestor::li")
     rank   = li.find_element(By.CSS_SELECTOR, "dt").text.strip()
     server = li.find_element(By.XPATH, ".//dt[text()='서버명']/following-sibling::dd").text.strip()
-    cls    = li.find_element(By.CSS_SELECTOR, "dd[class^='warrior'], dd[class^='thief'], dd[class^='mage']").text.strip()
-    power  = li.find_element(By.CSS_SELECTOR, "dd[class^='type_']").text.strip()
+    cls    = li.find_element(By.XPATH, ".//div[4]//dd").text.strip()
+    power  = li.find_element(By.CSS_SELECTOR, "div:nth-of-type(5) dd").text.strip()
 
     driver.quit()
     return {"server": server, "rank": rank, "class": cls, "power": power}
