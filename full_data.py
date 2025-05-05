@@ -1,0 +1,98 @@
+# full_data_selenium_requests.py
+
+import time
+import chromedriver_autoinstaller
+import requests
+from bs4 import BeautifulSoup
+from selenium import webdriver
+from selenium.webdriver.chrome.service import Service
+from selenium.webdriver.chrome.options import Options
+
+def get_driver():
+    chromedriver_autoinstaller.install()
+    opts = Options()
+    # 실제 창을 띄워서 사용
+    opts.add_argument("--headless=new")
+    opts.add_argument("--no-sandbox")
+    opts.add_argument("--disable-dev-shm-usage")
+    opts.add_argument("window-size=1200,800")
+    return webdriver.Chrome(service=Service(), options=opts)
+
+def fetch_rank_via_requests(server=None, name=""):
+    list_url = "https://mabinogimobile.nexon.com/Ranking/List?t=1"
+    api_url  = "https://mabinogimobile.nexon.com/Ranking/List/rankdata"
+
+    s = switch_server(server_name=server)
+
+    driver = get_driver()
+    driver.get(list_url)
+    time.sleep(2)
+
+    sess = requests.Session()
+    for ck in driver.get_cookies():
+        sess.cookies.set(ck['name'], ck['value'])
+        
+    headers = {
+        "User-Agent": driver.execute_script("return navigator.userAgent;"),
+        "Accept": "*/*",
+        "Referer": list_url,
+        "X-Requested-With": "XMLHttpRequest",
+    }
+    data = {
+        "t":       "1",
+        "pageno":  "1",
+        "s":       s,
+        "c":       "0",
+        "search":  name,
+    }
+
+    resp = sess.post(api_url, headers=headers, data=data)
+    driver.quit()
+    resp.raise_for_status()
+    return resp.text
+
+def switch_server(server_name):
+    server_map = {
+        "데이안": 1,
+        "아이라": 2,
+        "던컨": 3,
+        "알리사": 4,
+        "메이븐": 5,
+        "라사": 6,
+        "칼릭스": 7
+    }
+    return server_map.get(server_name, None)
+
+def parse_rank_html(html: str):
+    soup = BeautifulSoup(html, 'html.parser')
+    result = []
+
+    for li in soup.select("ul.list li.item"):
+        rank = li.select_one("div dl dt").text.strip()
+        change_tag = li.select_one("div dl dd")
+        change = change_tag.text.strip()
+        change_type = "up" if "up" in change_tag.get("class", []) else "down"
+
+        server = li.select("div dl")[1].select_one("dd").text.strip()
+        character = li.select("div dl")[2].select_one("dd").get("data-charactername").strip()
+        char_class = li.select("div dl")[3].select_one("dd").text.strip()
+        power = li.select("div dl")[4].select_one("dd").text.strip()
+
+        result.append({
+            "rank": rank,
+            "change": change,
+            "change_type": change_type,
+            "server": server,
+            "character": character,
+            "class": char_class,
+            "power": power
+        })
+    
+    return result
+
+
+if __name__ == "__main__":
+    html = fetch_rank_via_requests(server="던컨", name="힝트")
+    data = parse_rank_html(html)
+    for entry in data:
+        print(entry)
