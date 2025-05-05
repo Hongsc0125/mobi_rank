@@ -20,6 +20,8 @@ def get_driver():
     opts.add_argument("--no-sandbox")
     opts.add_argument("--disable-dev-shm-usage")
     opts.add_argument("window-size=1200,800")
+    opts.add_argument("--disable-gpu")
+    opts.add_argument("--remote-debugging-port=0")
     opts.binary_location = "/usr/bin/google-chrome" 
 
     return webdriver.Chrome(
