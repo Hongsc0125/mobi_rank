@@ -12,20 +12,19 @@ from selenium.webdriver.support import expected_conditions as EC
 
 
 def get_driver():
-    chromedriver_autoinstaller.install()
+    # chromedriver 자동 설치 및 경로 반환
+    chromedriver_path = chromedriver_autoinstaller.install()
 
     opts = Options()
-    opts = webdriver.ChromeOptions()
-    # 반드시 headless 모드로 실행
     opts.add_argument("--headless")
     opts.add_argument("--no-sandbox")
     opts.add_argument("--disable-dev-shm-usage")
-    # service = Service(ChromeDriverManager().install())
+    opts.add_argument("window-size=1200,800")
+    opts.binary_location = "/usr/bin/google-chrome" 
 
-    opts.binary_location = "/usr/bin/google-chrome"
-
+    # 명확히 chromedriver 경로 지정
     return webdriver.Chrome(
-        service=Service("/usr/bin/chromedriver"),
+        service=Service(chromedriver_path),
         options=opts
     )
 
