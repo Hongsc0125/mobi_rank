@@ -3,13 +3,13 @@ from sqlalchemy.orm import sessionmaker
 import logging
 from datetime import datetime, timedelta
 
-logger = logging.getLogger(__name__)
+# #logger = logging.get#logger(__name__)
 
 # 데이터베이스 엔진 생성
 engine = create_engine(
     "postgresql://super:Wkwkd119%21%21@207.180.212.248:5444/rank_data",
     pool_pre_ping=True,  # 연결 유효성 검사
-    echo=True  # SQL 쿼리 로깅 비활성화 (필요시 True로 변경)
+    echo=False,  # SQL 쿼리 로깅 비활성화
 )
 
 # 세션 팩토리 생성
@@ -21,7 +21,7 @@ def get_db():
     try:
         yield db
     except Exception as e:
-        logger.error(f"Database error: {e}")
+        #logger.error(f"Database error: {e}")
         db.rollback()
         raise
     finally:
@@ -91,7 +91,7 @@ def insert_data(data, server=None, character=None):
     # First check if we already have recent data
     recent_data = has_recent_data(server, character)
     if recent_data:
-        logger.info("Recent data found, skipping database update")
+        #logger.info("Recent data found, skipping database update")
         return {"success": True, "rows_affected": 0, "data": recent_data, "from_cache": True}
     
     # If no recent data, proceed with insert/update
@@ -145,7 +145,7 @@ def insert_data(data, server=None, character=None):
         return {"success": True, "rows_affected": len(data), "from_cache": False}
     except Exception as e:
         db.rollback()
-        logger.error(f"Error inserting data: {e}")
+        #logger.error(f"Error inserting data: {e}")
         raise
     finally:
         db.close()

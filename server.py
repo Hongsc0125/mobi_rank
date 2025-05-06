@@ -22,7 +22,13 @@ class IPWhitelistMiddleware(BaseHTTPMiddleware):
         client_ip = request.client.host
         
         # Define whitelist
-        whitelist = ["207.180.212.248", "127.0.0.1", "localhost", "59.12.47.180"]
+        whitelist = [
+            "207.180.212.248", 
+            "127.0.0.1", 
+            "localhost", 
+            "59.12.47.180", 
+            "2a02:c207:2258:5705::1",
+        ]
         
         # Check if client IP is in whitelist
         if client_ip not in whitelist:
@@ -57,12 +63,19 @@ def api_search(req: SearchReq):
             success = result.get("success", False)
             
             # Return a flattened response
-            return {
+            response = {
                 "success": success,
                 "message": message,
-                "character": character_data,  # Renamed from "data" to "character"
                 "from_cache": result.get("from_cache", False)
             }
+            
+            # Only include character data if it exists
+            if character_data:
+                response["character"] = character_data
+
+            logger.info(f"Response: {response}")
+                
+            return response
         
         # If result structure is unexpected, return as is
         return result

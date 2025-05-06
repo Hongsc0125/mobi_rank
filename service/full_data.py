@@ -7,6 +7,18 @@ from bs4 import BeautifulSoup
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
+import os
+import logging
+
+# 잘못된 코드: logging = logging.getLogger(__name__)
+# 올바른 코드: logger = logging.getLogger(__name__)
+
+# suppress chromedriver_autoinstaller and selenium logs
+os.environ["WDM_LOG_LEVEL"] = "0"
+os.environ["WDM_PRINT_FIRST_LINE"] = "False"
+logging.getLogger("selenium").setLevel(logging.CRITICAL)
+logging.getLogger("chromedriver_autoinstaller").setLevel(logging.CRITICAL)
+logging.getLogger("root").setLevel(logging.ERROR)
 
 def get_driver():
     chromedriver_autoinstaller.install()
@@ -15,6 +27,8 @@ def get_driver():
     opts.add_argument("--no-sandbox")
     opts.add_argument("--disable-dev-shm-usage")
     opts.add_argument("window-size=1200,800")
+    # suppress DevTools listening log
+    opts.add_experimental_option("excludeSwitches", ["enable-logging"])
     return webdriver.Chrome(service=Service(), options=opts)
 
 def fetch_rank_via_requests(server=None, name=""):
@@ -68,25 +82,39 @@ def parse_rank_html(html: str):
     soup = BeautifulSoup(html, 'html.parser')
     result = []
 
+    # Check if the "no data" message is present
+    no_data = soup.select_one("div.no_data")
+    if no_data:
+        # Return empty list for no results
+        return []
+
     for li in soup.select("ul.list li.item"):
-        rank = li.select_one("div dl dt").text.strip()
-        change_tag = li.select_one("div dl dd")
-        change = change_tag.text.strip()
-        change_type = "up" if "up" in change_tag.get("class", []) else "down"
+        try:
+            rank = li.select_one("div dl dt").text.strip()
+            change_tag = li.select_one("div dl dd")
+            change = change_tag.text.strip()
+            change_type = "up" if "up" in change_tag.get("class", []) else "down"
 
-        server = li.select("div dl")[1].select_one("dd").text.strip()
-        character = li.select("div dl")[2].select_one("dd").get("data-charactername").strip()
-        char_class = li.select("div dl")[3].select_one("dd").text.strip()
-        power = li.select("div dl")[4].select_one("dd").text.strip()
+            server = li.select("div dl")[1].select_one("dd").text.strip()
+            character = li.select("div dl")[2].select_one("dd").get("data-charactername").strip()
+            char_class = li.select("div dl")[3].select_one("dd").text.strip()
+            power = li.select("div dl")[4].select_one("dd").text.strip()
 
-        result.append({
-            "rank": rank,
-            "change": change,
-            "change_type": change_type,
-            "server": server,
-            "character": character,
-            "class": char_class,
-            "power": power
-        })
+            # Skip items with "알수없음" as character name
+            if character == "알수없음":
+                continue
+
+            result.append({
+                "rank": rank,
+                "change": change,
+                "change_type": change_type,
+                "server": server,
+                "character": character,
+                "class": char_class,
+                "power": power
+            })
+        except (AttributeError, IndexError) as e:
+            # Skip malformed items
+            continue
     
     return result

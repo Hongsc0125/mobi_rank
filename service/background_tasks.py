@@ -8,7 +8,7 @@ from sqlalchemy.orm import sessionmaker
 from service.full_data import fetch_rank_via_requests, parse_rank_html
 from service.db import engine, SessionLocal
 
-logger = logging.getLogger(__name__)
+# #logger = logging.get#logger(__name__)
 
 def get_outdated_characters():
     """Get list of characters that need updating (older than 10 minutes)"""
@@ -25,7 +25,7 @@ def get_outdated_characters():
         result = db.execute(query, {'threshold': time_threshold}).fetchall()
         return [{'server': row[0], 'character': row[1]} for row in result]
     except Exception as e:
-        logger.error(f"Error getting outdated characters: {e}")
+        #logger.error(f"Error getting outdated characters: {e}")
         return []
     finally:
         db.close()
@@ -44,7 +44,7 @@ def update_character_data(server, character):
                 break
         
         if not character_data:
-            logger.warning(f"Character {character} on {server} not found in rankings")
+            #logger.warning(f"Character {character} on {server} not found in rankings")
             return False
             
         # Update database
@@ -80,18 +80,18 @@ def update_character_data(server, character):
                 'power': power_value
             })
             db.commit()
-            logger.info(f"Updated data for {character} on {server}")
+            #logger.info(f"Updated data for {character} on {server}")
             return True
         except Exception as e:
             db.rollback()
-            logger.error(f"Error updating {character} on {server}: {e}")
+            #logger.error(f"Error updating {character} on {server}: {e}")
             return False
         finally:
             db.close()
             
     except Exception as e:
-        logger.error(f"Error in update_character_data: {e}")
-        logger.error(traceback.format_exc())
+        #logger.error(f"Error in update_character_data: {e}")
+        #logger.error(traceback.format_exc())
         return False
 
 def background_update_task():
@@ -100,7 +100,7 @@ def background_update_task():
         try:
             characters = get_outdated_characters()
             if characters:
-                logger.info(f"Found {len(characters)} characters to update")
+                #logger.info(f"Found {len(characters)} characters to update")
                 
                 for char in characters:
                     update_character_data(char['server'], char['character'])
@@ -111,8 +111,8 @@ def background_update_task():
             time.sleep(30)
             
         except Exception as e:
-            logger.error(f"Error in background update task: {e}")
-            logger.error(traceback.format_exc())
+            #logger.error(f"Error in background update task: {e}")
+            #logger.error(traceback.format_exc())
             # Sleep longer after errors
             time.sleep(60)
 
@@ -122,6 +122,6 @@ def start_background_tasks():
     update_thread = threading.Thread(target=background_update_task, daemon=True)
     update_thread.name = "character-update-thread"
     update_thread.start()
-    logger.info("Started background character update thread")
+    #logger.info("Started background character update thread")
     
     return update_thread
