@@ -92,11 +92,14 @@ def search_character(server_name: str, character_name: str, wait_sec: float = 10
         try:
             logger.debug("Waiting for server selection box to be clickable")
             box = WebDriverWait(driver, 10).until(
-                EC.element_to_be_clickable((By.CSS_SELECTOR, "section.server_class_wrap .select_server .select_box"))
+                EC.element_to_be_clickable((
+                    By.CSS_SELECTOR,
+                    ".select_area .select_server .select_box"
+                ))
             )
             logger.debug("Server selection box found, clicking with JavaScript")
-            driver.execute_script("arguments[0].scrollIntoView(true);", box)  # 화면에 보이게 스크롤
-            driver.execute_script("arguments[0].click();", box)  # JS로 강제 클릭
+            driver.execute_script("arguments[0].scrollIntoView(true);", box)
+            driver.execute_script("arguments[0].click();", box)
             print("✅ 서버 선택 박스 클릭 성공")
             # driver.execute_script("arguments[0].click();", box)
             
