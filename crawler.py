@@ -34,18 +34,20 @@ def get_driver():
             chromedriver_path = "/usr/bin/chromedriver"
 
         logger.debug("Configuring Chrome options")
-        opts = Options()
-        opts.add_argument("--headless")
-        opts.add_argument("--no-sandbox")
-        opts.add_argument("--disable-dev-shm-usage")
-        opts.add_argument("window-size=1920,1080")
-        opts.add_argument("--disable-gpu")
-        opts.add_argument("--remote-debugging-port=0")
+        options = Options()
+        options.add_argument("--headless=new")  # 최신 헤드리스 모드
+        options.add_argument("--no-sandbox")
+        options.add_argument("--disable-dev-shm-usage")
+        options.add_argument("--disable-gpu")
+        options.add_argument("--window-size=1920,1080")
+        options.add_argument("--disable-blink-features=AutomationControlled")
+        options.add_argument("user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+
         
         try:
             logger.debug("Setting Chrome binary location")
-            opts.binary_location = "/usr/bin/google-chrome" 
-            logger.debug(f"Chrome binary location set to: {opts.binary_location}")
+            options.binary_location = "/usr/bin/google-chrome" 
+            logger.debug(f"Chrome binary location set to: {options.binary_location}")
         except Exception as e:
             logger.warning(f"Error setting binary location: {str(e)}")
 
@@ -54,7 +56,7 @@ def get_driver():
         try:
             driver = webdriver.Chrome(
                 service=Service(chromedriver_path),
-                options=opts
+                options=options
             )
             logger.info("Chrome driver initialized successfully")
             return driver
@@ -62,7 +64,7 @@ def get_driver():
             logger.error(f"Failed to initialize driver with service: {str(e)}")
             # Fallback - try without service parameter
             logger.info("Trying fallback driver initialization")
-            driver = webdriver.Chrome(options=opts)
+            driver = webdriver.Chrome(options=options)
             logger.info("Fallback Chrome driver initialized successfully")
             return driver
             
@@ -89,9 +91,12 @@ def search_character(server_name: str, character_name: str, wait_sec: float = 10
         logger.info("Step 1: Selecting server")
         try:
             logger.debug("Waiting for server selection box to be clickable")
-            box = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, ".select_server .select_box")))
+            box = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, ".select_server .select_box")))
             logger.debug("Server selection box found, clicking with JavaScript")
-            driver.execute_script("arguments[0].click();", box)
+            driver.execute_script("arguments[0].scrollIntoView(true);", box)  # 화면에 보이게 스크롤
+            driver.execute_script("arguments[0].click();", box)  # JS로 강제 클릭
+            print("✅ 서버 선택 박스 클릭 성공")
+            # driver.execute_script("arguments[0].click();", box)
             
             logger.debug("Waiting for server options to be displayed")
             wait.until(lambda d: d.find_element(By.CSS_SELECTOR, ".select_option li").is_displayed())
