@@ -91,7 +91,9 @@ def search_character(server_name: str, character_name: str, wait_sec: float = 10
         logger.info("Step 1: Selecting server")
         try:
             logger.debug("Waiting for server selection box to be clickable")
-            box = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, ".select_server .select_box")))
+            box = WebDriverWait(driver, 10).until(
+                EC.element_to_be_clickable((By.CSS_SELECTOR, "section.server_class_wrap .select_server .select_box"))
+            )
             logger.debug("Server selection box found, clicking with JavaScript")
             driver.execute_script("arguments[0].scrollIntoView(true);", box)  # 화면에 보이게 스크롤
             driver.execute_script("arguments[0].click();", box)  # JS로 강제 클릭
@@ -227,8 +229,8 @@ if __name__ == "__main__":
     try:
         logger.info("=== TESTING CHARACTER SEARCH ===")
         # Default test values - change these as needed
-        test_server = "루시아"
-        test_character = "테스트캐릭터"
+        test_server = "던컨"
+        test_character = "힝트"
         
         logger.info(f"Searching for character '{test_character}' on server '{test_server}'")
         result = search_character(test_server, test_character)
