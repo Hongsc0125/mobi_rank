@@ -1,4 +1,4 @@
-# smoke_stealth.py
+# smoke_test.py
 from playwright.sync_api import sync_playwright
 from playwright_stealth import stealth_sync
 
