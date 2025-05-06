@@ -35,7 +35,7 @@ def get_driver():
 
         logger.debug("Configuring Chrome options")
         options = Options()
-        options.add_argument("--headless=new")  # 최신 헤드리스 모드
+        # options.add_argument("--headless=new")  # 최신 헤드리스 모드
         options.add_argument("--no-sandbox")
         options.add_argument("--disable-dev-shm-usage")
         options.add_argument("--disable-gpu")
