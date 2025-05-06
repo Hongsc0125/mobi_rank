@@ -90,10 +90,3 @@ def parse_rank_html(html: str):
         })
     
     return result
-
-
-if __name__ == "__main__":
-    html = fetch_rank_via_requests(server="던컨", name="힝트")
-    data = parse_rank_html(html)
-    for entry in data:
-        print(entry)

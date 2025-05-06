@@ -6,3 +6,6 @@ pydantic~=2.11.4
 crawler~=0.0.2
 requests
 beautifulsoup4
+starlette>=0.36.0
+sqlalchemy
+psycopg2-binary
