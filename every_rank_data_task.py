@@ -133,7 +133,7 @@ def save_discovered_ranges():
             
         with open(RANGES_FILE, 'w', encoding='utf-8') as f:
             json.dump(data_to_save, f, ensure_ascii=False, indent=2)
-        logger.info(f"{sum(len(ranges) for ranges in discovered_ranges.values())}개 범위 파일 저장 완료")
+        # logger.info(f"{sum(len(ranges) for ranges in discovered_ranges.values())}개 범위 파일 저장 완료")
     except Exception as e:
         logger.error(f"범위 저장 중 오류: {e}")
 
@@ -375,7 +375,7 @@ def crawl_base_pages(driver, server_num, div=1):
             logger.info(f"서버 {server_num}, 페이지 {page_num} (범위: {range_text}) 최근 10분 내 수집됨, 스킵")
             continue
             
-        logger.info(f"서버 {server_num}, 페이지 {page_num} 크롤링 중 (범위: {range_text})")
+        # logger.info(f"서버 {server_num}, 페이지 {page_num} 크롤링 중 (범위: {range_text})")
         
         # 페이지 가져오기 및 처리
         html = fetch_rank_page_by_pageno(driver, server_num, page_num, div)
@@ -387,7 +387,7 @@ def crawl_base_pages(driver, server_num, div=1):
         
         # 데이터 저장
         insert_data(parsed_data, server=None, character=None, div=div)
-        logger.info(f"서버 {server_num}, 페이지 {page_num}에서 {len(parsed_data)}개 항목 저장됨")
+        # logger.info(f"서버 {server_num}, 페이지 {page_num}에서 {len(parsed_data)}개 항목 저장됨")
         
         # 수집됨으로 표시
         mark_range_crawled(server_num, range_text)
@@ -597,7 +597,7 @@ class DataCollector:
             if self.batch:
                 try:
                     insert_data(self.batch, server=None, character=None, div=self.div)
-                    logger.info(f"{len(self.batch)}개 항목 일괄 저장 완료")
+                    # logger.info(f"{len(self.batch)}개 항목 일괄 저장 완료")
                 except Exception as e:
                     logger.error(f"배치 데이터 저장 중 오류: {e}")
                 self.batch = []
@@ -922,8 +922,8 @@ def thread_monitor():
                         except Exception as e:
                             logger.error(f"스레드 재시작 중 오류: {e}", exc_info=True)
             
-            # 5분마다 전체 상태 요약 출력
-            if datetime.now().minute % 5 == 0 and datetime.now().second < 10:
+            # 1분마다 전체 상태 요약 출력
+            if datetime.now().minute % 1 == 0 and datetime.now().second < 10:
                 log_all_thread_status()
             
             # 스레드 모니터링은 10초마다 수행
