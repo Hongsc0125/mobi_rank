@@ -34,7 +34,7 @@ last_base_refresh = {}  # server_num -> timestamp
 range_queue = {}        # server_num -> deque of ranges to explore
 
 # File to persist discovered ranges between runs
-RANGES_FILE = "d:\\1_workspace\\mobi_rank\\discovered_ranges.json"
+RANGES_FILE = os.path.join(os.path.dirname(__file__), "discovered_ranges.json")
 
 # 전역 종료 이벤트 - 모든 스레드에게 종료 신호를 보내기 위한 플래그
 shutdown_event = threading.Event()
