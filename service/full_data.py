@@ -7,18 +7,13 @@ from bs4 import BeautifulSoup
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
-import os
 import logging
 
-# 잘못된 코드: logging = logging.getLogger(__name__)
-# 올바른 코드: logger = logging.getLogger(__name__)
+class SuppressChromedriverMessage(logging.Filter):
+    def filter(self, record):
+        return "Chromedriver is already installed." not in record.getMessage()
 
-# suppress chromedriver_autoinstaller and selenium logs
-os.environ["WDM_LOG_LEVEL"] = "0"
-os.environ["WDM_PRINT_FIRST_LINE"] = "False"
-logging.getLogger("selenium").setLevel(logging.CRITICAL)
-logging.getLogger("chromedriver_autoinstaller").setLevel(logging.CRITICAL)
-logging.getLogger("root").setLevel(logging.ERROR)
+logging.getLogger().addFilter(SuppressChromedriverMessage())
 
 def get_driver():
     chromedriver_autoinstaller.install()

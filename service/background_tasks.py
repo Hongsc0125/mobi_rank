@@ -11,7 +11,6 @@ from service.db import engine, SessionLocal
 # #logger = logging.get#logger(__name__)
 
 def get_outdated_characters():
-    """Get list of characters that need updating (older than 10 minutes)"""
     db = SessionLocal()
     try:
         time_threshold = datetime.now() - timedelta(minutes=10)
@@ -25,7 +24,6 @@ def get_outdated_characters():
         result = db.execute(query, {'threshold': time_threshold}).fetchall()
         return [{'server': row[0], 'character': row[1]} for row in result]
     except Exception as e:
-        #logger.error(f"Error getting outdated characters: {e}")
         return []
     finally:
         db.close()
