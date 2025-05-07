@@ -22,7 +22,6 @@ import psutil
 import gc
 import signal
 import sys
-from selenium.common.exceptions import WebDriverException
 
 logger = logging.getLogger(__name__)
 
@@ -56,10 +55,10 @@ def update_thread_status(thread_name, status, details=None):
             'details': details,
             'updated_at': timestamp
         }
-        if details:
-            logger.info(f"[{thread_name}] {status}: {details}")
-        else:
-            logger.info(f"[{thread_name}] {status}")
+        # if details:
+            # logger.info(f"[{thread_name}] {status}: {details}")
+        # else:
+            # logger.info(f"[{thread_name}] {status}")
 
 def log_all_thread_status():
     """모든 스레드의 현재 상태 로깅"""
@@ -119,7 +118,7 @@ def load_discovered_ranges():
                     discovered_ranges[server_num] = {}
                     for range_text, timestamp_str in ranges.items():
                         discovered_ranges[server_num][range_text] = datetime.fromisoformat(timestamp_str)
-                # logger.info(f"파일에서 {sum(len(ranges) for ranges in discovered_ranges.values())}개 범위 로드 완료")
+                logger.info(f"파일에서 {sum(len(ranges) for ranges in discovered_ranges.values())}개 범위 로드 완료")
     except Exception as e:
         logger.error(f"범위 로드 중 오류: {e}")
         discovered_ranges = {i: {} for i in range(1, 8)}
@@ -134,7 +133,7 @@ def save_discovered_ranges():
             
         with open(RANGES_FILE, 'w', encoding='utf-8') as f:
             json.dump(data_to_save, f, ensure_ascii=False, indent=2)
-        # logger.info(f"{sum(len(ranges) for ranges in discovered_ranges.values())}개 범위 파일 저장 완료")
+        logger.info(f"{sum(len(ranges) for ranges in discovered_ranges.values())}개 범위 파일 저장 완료")
     except Exception as e:
         logger.error(f"범위 저장 중 오류: {e}")
 
@@ -181,7 +180,7 @@ def get_driver(high_performance=False):
     if high_performance:
         # 메모리/성능 최적화 설정
         opts.add_argument("--js-flags=--expose-gc")
-        # opts.add_argument("--disable-gpu") # GPU 사용을 위해 이 줄을 주석 처리하거나 삭제
+        opts.add_argument("--disable-gpu")
         opts.add_argument("--disable-extensions")
         opts.add_argument("--disable-software-rasterizer")
         opts.add_argument("--disable-features=site-per-process")
@@ -363,20 +362,20 @@ def parse_rank_html(html: str):
 
 def crawl_base_pages(driver, server_num, div=1):
     """기본 페이지(1-50)를 10분 최신성 확인과 함께 크롤링"""
-    # logger.info(f"서버 {server_num} 기본 1-50 페이지 크롤링 시작")
+    logger.info(f"서버 {server_num} 기본 1-50 페이지 크롤링 시작")
     
     boundary_characters = []
     new_ranges_count = 0
     
     for page_num in range(1, 51):
         # 이 페이지/범위가 최근(10분 이내)인지 확인
-        range_text = f"{(page_num-1)*20+1}위 ~ {(page_num)*20}위"
+        range_text = f"{(page_num-1)*20+1}위 ~ {page_num*20}위"
         
         if is_range_recent(server_num, range_text):
-            # logger.info(f"서버 {server_num}, 페이지 {page_num} (범위: {range_text}) 최근 10분 내 수집됨, 스킵")
+            logger.info(f"서버 {server_num}, 페이지 {page_num} (범위: {range_text}) 최근 10분 내 수집됨, 스킵")
             continue
             
-        # logger.info(f"서버 {server_num}, 페이지 {page_num} 크롤링 중 (범위: {range_text})")
+        logger.info(f"서버 {server_num}, 페이지 {page_num} 크롤링 중 (범위: {range_text})")
         
         # 페이지 가져오기 및 처리
         html = fetch_rank_page_by_pageno(driver, server_num, page_num, div)
@@ -388,7 +387,7 @@ def crawl_base_pages(driver, server_num, div=1):
         
         # 데이터 저장
         insert_data(parsed_data, server=None, character=None, div=div)
-        # logger.info(f"서버 {server_num}, 페이지 {page_num}에서 {len(parsed_data)}개 항목 저장됨")
+        logger.info(f"서버 {server_num}, 페이지 {page_num}에서 {len(parsed_data)}개 항목 저장됨")
         
         # 수집됨으로 표시
         mark_range_crawled(server_num, range_text)
@@ -397,12 +396,12 @@ def crawl_base_pages(driver, server_num, div=1):
         # 마지막 페이지 캐릭터들 경계 탐색용으로 저장
         if page_num == 50:
             boundary_characters = [item['character'] for item in parsed_data]
-            # logger.info(f"경계 캐릭터들 (981-1000위): {boundary_characters}")
+            logger.info(f"경계 캐릭터들 (981-1000위): {boundary_characters}")
     
     # 마지막 갱신 시간 업데이트
     last_base_refresh[server_num] = datetime.now()
     
-    # logger.info(f"서버 {server_num} 기본 페이지 크롤링 완료: {new_ranges_count}개 페이지 업데이트됨")
+    logger.info(f"서버 {server_num} 기본 페이지 크롤링 완료: {new_ranges_count}개 페이지 업데이트됨")
     return boundary_characters
 
 # initialize_range_queue 함수 수정 - 908등 이상 캐릭터 사용
@@ -423,7 +422,7 @@ def initialize_range_queue(server_num, boundary_characters):
             server_name = get_server_name(server_num)
             
             # 908등 이상의 캐릭터를 가져옴 (981등 ~ 1000등)
-            # logger.info(f"서버 {server_num}, {server_name}에서 981등 이상 캐릭터 로드 중...")
+            logger.info(f"서버 {server_num}, {server_name}에서 981등 이상 캐릭터 로드 중...")
             results = get_980_data(server_name)
 
             # 탐색을 위해 이 캐릭터들을 큐에 추가
@@ -434,16 +433,16 @@ def initialize_range_queue(server_num, boundary_characters):
                     range_queue[server_num].append(char)
                     chars_added += 1
                     
-            # logger.info(f"서버 {server_num}: 908등 이상 {chars_added}개 캐릭터를 탐색 큐에 추가")
+            logger.info(f"서버 {server_num}: 908등 이상 {chars_added}개 캐릭터를 탐색 큐에 추가")
         except Exception as e:
             logger.error(f"이전 범위 캐릭터 로드 중 오류: {e}")
 
 def explore_ranges(driver, server_num, div=1):
     """시간 기반 결정으로 BFS를 사용하여 새 범위 탐색"""
-    # logger.info(f"서버 {server_num} 새 범위 탐색 시작")
+    logger.info(f"서버 {server_num} 새 범위 탐색 시작")
     
     if server_num not in range_queue or not range_queue[server_num]:
-        # logger.warning(f"서버 {server_num}에 탐색할 큐가 없음")
+        logger.warning(f"서버 {server_num}에 탐색할 큐가 없음")
         return False
     
     visited_ranges = set()
@@ -454,7 +453,7 @@ def explore_ranges(driver, server_num, div=1):
     while range_queue[server_num]:
         # 기본 페이지 갱신 시간인지 확인
         if should_refresh_base_pages(server_num):
-            # logger.info(f"서버 {server_num} 기본 페이지 갱신 시간 (20분 경과)")
+            logger.info(f"서버 {server_num} 기본 페이지 갱신 시간 (20분 경과)")
             return True  # 기본 페이지 갱신 신호
             
         # 탐색할 다음 캐릭터 가져오기
@@ -465,7 +464,7 @@ def explore_ranges(driver, server_num, div=1):
             continue
             
         visited_chars_this_run.add(current_char)
-        # logger.info(f"서버 {server_num}에서 '{current_char}' 검색 중... (큐 크기: {len(range_queue[server_num])})")
+        logger.info(f"서버 {server_num}에서 '{current_char}' 검색 중... (큐 크기: {len(range_queue[server_num])})")
         
         # 재사용 드라이버로 검색
         html = fetch_rank_page(driver, server_num, current_char, div)
@@ -473,7 +472,7 @@ def explore_ranges(driver, server_num, div=1):
         # 범위 정보 가져오기
         rank_range = parse_rank_range(html)
         if not rank_range:
-            # logger.warning(f"'{current_char}' 검색 결과에서 범위를 찾을 수 없음")
+            logger.warning(f"'{current_char}' 검색 결과에서 범위를 찾을 수 없음")
             continue
             
         # 범위가 최근이거나 이미 이번 실행에서 처리되었는지 확인
@@ -483,7 +482,7 @@ def explore_ranges(driver, server_num, div=1):
             
         # 처리할 범위 발견
         visited_ranges.add(rank_range)
-        # logger.info(f"서버 {server_num}에서 새 범위 처리: {rank_range}")
+        logger.info(f"서버 {server_num}에서 새 범위 처리: {rank_range}")
         
         # 데이터 파싱
         parsed_data = parse_rank_html(html)
@@ -496,7 +495,7 @@ def explore_ranges(driver, server_num, div=1):
         mark_range_crawled(server_num, rank_range)
         new_ranges_found += 1
         
-        # logger.info(f"서버 {server_num}에서 {len(parsed_data)}개 항목 저장됨 (범위: {rank_range})")
+        logger.info(f"서버 {server_num}에서 {len(parsed_data)}개 항목 저장됨 (범위: {rank_range})")
         
         # 탐색 큐에 캐릭터 추가
         for item in parsed_data:
@@ -504,7 +503,7 @@ def explore_ranges(driver, server_num, div=1):
             if char_name not in visited_chars_this_run:
                 range_queue[server_num].append(char_name)
     
-    # logger.info(f"서버 {server_num} 범위 탐색 완료: {new_ranges_found}개 새 범위 발견")
+    logger.info(f"서버 {server_num} 범위 탐색 완료: {new_ranges_found}개 새 범위 발견")
     return new_ranges_found > 0
 
 # 시스템 리소스 확인 및 최적 설정 결정
@@ -541,7 +540,6 @@ class DriverPool:
         self.pool = []
         self.lock = threading.Lock()
         self.high_performance = high_performance
-        self.pool_size = pool_size # Store pool_size
         
         # 풀 초기화
         for _ in range(pool_size):
@@ -550,59 +548,18 @@ class DriverPool:
                 self.pool.append(driver)
             except Exception as e:
                 logger.error(f"드라이버 생성 중 오류: {e}")
-
-    def _is_driver_valid(self, driver):
-        """드라이버 세션이 유효한지 확인"""
-        if driver is None:
-            return False
-        try:
-            # 간단한 속성 접근으로 세션 활성 상태 확인
-            _ = driver.title 
-            return True
-        except WebDriverException: # Catch specific Selenium exceptions
-            logger.warning("드라이버 세션이 유효하지 않음 감지.")
-            return False
     
     def get_driver(self):
-        """사용 가능한 드라이버를 가져옴, 없으면 새로 생성. 유효성 검사 포함."""
+        """사용 가능한 드라이버를 가져옴, 없으면 새로 생성"""
         with self.lock:
-            while self.pool:
-                driver = self.pool.pop(0) # FIFO
-                if self._is_driver_valid(driver):
-                    return driver
-                else:
-                    logger.warning("유효하지 않은 드라이버를 풀에서 제거하고 폐기합니다.")
-                    try:
-                        driver.quit()
-                    except: # 이미 끊어졌을 수도 있음
-                        pass
-            # 풀이 비었거나 모든 드라이버가 유효하지 않은 경우 새 드라이버 생성
-            logger.info("풀에 사용 가능한 유효 드라이버가 없어 새 드라이버를 생성합니다.")
-            try:
+            if not self.pool:
                 return get_driver(self.high_performance)
-            except Exception as e:
-                logger.error(f"새 드라이버 생성 중 오류: {e}")
-                raise # Re-raise exception if driver creation fails critically
+            return self.pool.pop()
     
     def return_driver(self, driver):
-        """사용 완료된 드라이버를 풀에 반환. 유효성 검사 포함."""
+        """사용 완료된 드라이버를 풀에 반환"""
         with self.lock:
-            if self._is_driver_valid(driver):
-                if len(self.pool) < self.pool_size: # 풀 크기 제한
-                    self.pool.append(driver)
-                else:
-                    # 풀이 가득 찼으면 드라이버 종료
-                    logger.info("드라이버 풀이 가득 차서 반환된 드라이버를 종료합니다.")
-                    try:
-                        driver.quit()
-                    except WebDriverException:
-                        logger.warning("반환된 드라이버 종료 중 오류 발생 (이미 종료되었을 수 있음).")
-            else:
-                logger.warning("유효하지 않은 드라이버를 풀에 반환하지 않고 폐기합니다.")
-                try:
-                    driver.quit()
-                except: # 이미 끊어졌을 수도 있음
-                    pass
+            self.pool.append(driver)
     
     def close_all(self):
         """모든 드라이버 종료"""
@@ -653,7 +610,7 @@ def optimized_base_pages_refresh_worker():
     thread_name = threading.current_thread().name
     update_thread_status(thread_name, "초기화 중", "베이스 페이지 워커")
     
-    # logger.info("베이스 페이지 갱신 워커 시작")
+    logger.info("베이스 페이지 갱신 워커 시작")
     
     # 세션 로컬 임포트
     from service.db import SessionLocal
@@ -662,14 +619,8 @@ def optimized_base_pages_refresh_worker():
     settings = get_optimal_settings()
     
     # 단일 드라이버 생성 (모든 서버 작업에 재사용)
-    driver = None
-    try:
-        driver = get_driver(high_performance=True)
-    except Exception as e:
-        logger.error(f"베이스 페이지 워커 초기 드라이버 생성 실패: {e}")
-        update_thread_status(thread_name, "오류 발생", "초기 드라이버 생성 실패")
-        return # 드라이버 없이는 실행 불가
-
+    driver = get_driver(high_performance=True)
+    
     # 모든 서버에 대한 마지막 갱신 시간 추적
     refresh_interval = timedelta(minutes=20)
     last_refresh = {i: datetime.now() - refresh_interval for i in range(1, 8)}
@@ -692,33 +643,17 @@ def optimized_base_pages_refresh_worker():
                     # 범위 큐 초기화 (경계 캐릭터 추가)
                     if boundary_chars:
                         initialize_range_queue(current_server, boundary_chars)
-                        # logger.info(f"서버 {current_server} 경계 캐릭터 {len(boundary_chars)}개 발견")
+                        logger.info(f"서버 {current_server} 경계 캐릭터 {len(boundary_chars)}개 발견")
                     
                     # 마지막 갱신 시간 업데이트
                     last_refresh[current_server] = datetime.now()
-                except WebDriverException as e_wd: # Selenium 관련 예외 처리
-                    logger.error(f"서버 {current_server} 기본 페이지 갱신 중 WebDriverException 발생: {e_wd}")
-                    update_thread_status(thread_name, "드라이버 오류", f"서버 {current_server} WebDriver 오류, 드라이버 재시작 시도")
-                    if driver:
-                        try:
-                            driver.quit()
-                        except:
-                            pass
-                    try:
-                        driver = get_driver(high_performance=True)
-                        logger.info("새 드라이버 인스턴스 생성 완료.")
-                    except Exception as e_new_driver:
-                        logger.error(f"새 드라이버 생성 실패: {e_new_driver}")
-                        update_thread_status(thread_name, "치명적 오류", "드라이버 재생성 실패, 워커 종료")
-                        shutdown_event.set() # 심각한 문제이므로 종료 신호
-                        break 
                 except Exception as e:
                     logger.error(f"서버 {current_server} 기본 페이지 갱신 중 오류: {e}")
                 
                 update_thread_status(thread_name, "완료", f"서버 {current_server} 갱신 완료")
             else:
                 update_thread_status(thread_name, "대기 중", f"서버 {current_server} 갱신 필요 없음")
-                logger.info(f"서버 {current_server} 갱신 필요 없음, 최근 갱신: {last_refresh[current_server]}")
+                # logger.info(f"서버 {current_server} 갱신 필요 없음, 최근 갱신: {last_refresh[current_server]}")
             
             # 다음 서버로 이동 (1-7 사이 순환)
             current_server = current_server % 7 + 1
@@ -786,27 +721,26 @@ def optimized_range_exploration_worker(server_num):
                 # 큐가 비어있으면 재로드
                 if not range_queue[server_num]:
                     update_thread_status(thread_name, "큐 로드 중", f"서버 {server_num} 큐 비어있음")
-                    # logger.info(f"서버 {server_num}의 범위 큐가 비어있음, 상위 랭킹 캐릭터 불러오기 시도")
+                    # logger.info(f"서버 {server_num}의 범위 큐가 비어있음, 908등 이상 캐릭터 불러오기 시도")
                     try:
                         # 서버 이름으로 변환
                         server_name = get_server_name(server_num)
-                        # logger.info(f"서버 {server_num}({server_name})의 캐릭터 로드 시작")
+                        logger.info(f"서버 {server_num}({server_name})의 캐릭터 로드 시작")
 
-                        # get_980_data 함수로 상위 랭킹 캐릭터 로드
-                        # 이 함수는 981등 이상의 캐릭터 데이터를 가져옴
-                        # logger.info(f"서버 {server_num}, {server_name}에서 상위 랭킹 캐릭터 로드 중...")
+                        # 980+ 순위 캐릭터 로드
+                        logger.info(f"서버 {server_num}, {server_name}에서 981등 이상 캐릭터 로드 중...")
                         results = get_980_data(server_name)
-                        # logger.info(f"서버 {server_num}의 상위 랭킹 캐릭터 로드 완료 :: {len(results)}개 캐릭터 발견")
+                        logger.info(f"서버 {server_num}의 908등 이상 캐릭터 로드 완료 :: {len(results)}개 캐릭터 발견")
                         
                         chars_added = 0
                         if results:
                             for row in results:
                                 char = row[0]
-                                # 모든 캐릭터를 탐색 대상으로 추가 (processed_chars에 없는지 확인 안함)
-                                range_queue[server_num].append(char)
-                                chars_added += 1
+                                if char not in processed_chars:
+                                    range_queue[server_num].append(char)
+                                    chars_added += 1
                             
-                            # logger.info(f"서버 {server_num}: {chars_added}개 캐릭터를 큐에 추가")
+                            logger.info(f"서버 {server_num}: 이전에 발견된 {chars_added}개 캐릭터를 큐에 추가")
                         else:
                             # 캐릭터가 없는 경우 잠시 대기 - 기본 갱신 스레드에서 채워줄 것임
                             logger.info(f"서버 {server_num}에 대한 1001+ 캐릭터 없음, 대기")
@@ -830,13 +764,13 @@ def optimized_range_exploration_worker(server_num):
                     
                     if not char_batch:
                         update_thread_status(thread_name, "대기 중", f"서버 {server_num} 처리할 캐릭터 없음")
-                        logger.info(f"서버 {server_num} 처리할 캐릭터 없음, 대기")
+                        # logger.info(f"서버 {server_num} 처리할 캐릭터 없음, 대기")
                         time.sleep(10)
                         continue
                     
                     update_thread_status(thread_name, "캐릭터 처리 중", 
                                 f"서버 {server_num}, {len(char_batch)}개 캐릭터 처리 예정")
-                    logger.info(f"서버 {server_num}에서 {len(char_batch)}개 캐릭터 병렬 처리")
+                    # logger.info(f"서버 {server_num}에서 {len(char_batch)}개 캐릭터 병렬 처리")
                     stats['characters_processed'] += len(char_batch)
                     
                     # 각 캐릭터에 대한 처리 함수
@@ -851,32 +785,30 @@ def optimized_range_exploration_worker(server_num):
                             if not rank_range:
                                 return None
                                 
+                            # 이미 처리한 범위면 스킵
+                            if is_range_recent(server_num, rank_range):
+                                return None
+                                
                             # 데이터 파싱
                             parsed_data = parse_rank_html(html)
                             if not parsed_data:
                                 return None
                                 
-                            # 범위가 최근에 크롤링된 경우에도 새로운 캐릭터가 있는지 확인하고 처리
-                            recently_crawled = is_range_recent(server_num, rank_range)
+                            # 결과 저장 및 범위 마킹
+                            data_collector.add_data(parsed_data)
+                            mark_range_crawled(server_num, rank_range)
+                            stats['ranges_found'] += 1
                             
-                            # 새 캐릭터 추출
+                            # 새로운 캐릭터 추출하여 반환 (큐에 추가하기 위해)
                             new_chars = []
                             for item in parsed_data:
                                 new_char = item['character']
                                 if new_char not in processed_chars:
                                     new_chars.append(new_char)
-                            
-                            # 이미 처리된 범위라도 데이터는 저장 (업데이트 발생 가능성)
-                            data_collector.add_data(parsed_data)
-                            
-                            # 범위가 최근에 크롤링되지 않았다면 크롤링 시간 갱신
-                            if not recently_crawled:
-                                mark_range_crawled(server_num, rank_range)
-                                stats['ranges_found'] += 1
-                            
+                                    
                             return new_chars
                         finally:
-                            driver_pool.return_driver(driver) # 드라이버 반환 시 유효성 검사됨
+                            driver_pool.return_driver(driver)
                     
                     # 병렬 실행
                     futures = [executor.submit(process_character, char) for char in char_batch]
