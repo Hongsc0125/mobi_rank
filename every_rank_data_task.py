@@ -743,7 +743,7 @@ def optimized_range_exploration_worker(server_num):
                             logger.info(f"서버 {server_num}: 이전에 발견된 {chars_added}개 캐릭터를 큐에 추가")
                         else:
                             # 캐릭터가 없는 경우 잠시 대기 - 기본 갱신 스레드에서 채워줄 것임
-                            logger.info(f"서버 {server_num}에 대한 1001+ 캐릭터 없음, 대기")
+                            # logger.info(f"서버 {server_num}에 대한 1001+ 캐릭터 없음, 대기")
                             time.sleep(30)
                             continue
                     except Exception as e:
