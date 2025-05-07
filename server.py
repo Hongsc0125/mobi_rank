@@ -29,6 +29,7 @@ class IPWhitelistMiddleware(BaseHTTPMiddleware):
             "localhost", 
             "59.12.47.180", 
             "2a02:c207:2258:5705::1",
+            "218.233.5.245"
         ]
         
         # Check if client IP is in whitelist
