@@ -181,7 +181,7 @@ def get_driver(high_performance=False):
     if high_performance:
         # 메모리/성능 최적화 설정
         opts.add_argument("--js-flags=--expose-gc")
-        opts.add_argument("--disable-gpu")
+        # opts.add_argument("--disable-gpu") # GPU 사용을 위해 이 줄을 주석 처리하거나 삭제
         opts.add_argument("--disable-extensions")
         opts.add_argument("--disable-software-rasterizer")
         opts.add_argument("--disable-features=site-per-process")
@@ -370,7 +370,7 @@ def crawl_base_pages(driver, server_num, div=1):
     
     for page_num in range(1, 51):
         # 이 페이지/범위가 최근(10분 이내)인지 확인
-        range_text = f"{(page_num-1)*20+1}위 ~ {page_num*20}위"
+        range_text = f"{(page_num-1)*20+1}위 ~ {(page_num)*20}위"
         
         if is_range_recent(server_num, range_text):
             logger.info(f"서버 {server_num}, 페이지 {page_num} (범위: {range_text}) 최근 10분 내 수집됨, 스킵")
