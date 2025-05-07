@@ -27,7 +27,7 @@ def get_db():
     finally:
         db.close()
 
-def has_recent_data(server, character=None):
+def has_recent_data(server, character=None, div=1):
     """
     Check if we have data retrieved within the last 10 minutes
     Returns the data if recent, None otherwise
@@ -42,17 +42,19 @@ def has_recent_data(server, character=None):
                 SELECT * FROM mabinogi_ranking
                 WHERE server_name = :server 
                 AND character_name = :character
+                AND div = :div
                 AND retrieved_at > :threshold
                 LIMIT 1
             """)
-            params = {'server': server, 'character': character, 'threshold': time_threshold}
+            params = {'server': server, 'character': character, 'div': div, 'threshold': time_threshold}
         else:
             query = text("""
                 SELECT COUNT(*) FROM mabinogi_ranking
                 WHERE server_name = :server 
+                AND div = :div
                 AND retrieved_at > :threshold
             """)
-            params = {'server': server, 'threshold': time_threshold}
+            params = {'server': server, 'div': div, 'threshold': time_threshold}
             
             # Check if we have a minimum number of records (e.g., 20)
             count = db.execute(query, params).scalar()
@@ -63,6 +65,7 @@ def has_recent_data(server, character=None):
             query = text("""
                 SELECT * FROM mabinogi_ranking
                 WHERE server_name = :server 
+                AND div = :div
                 AND retrieved_at > :threshold
             """)
         
@@ -74,22 +77,22 @@ def has_recent_data(server, character=None):
         # For character-specific query, return just that row
         if character and len(result) > 0:
             columns = ['id', 'rank_position', 'change_amount', 'change_type', 
-                      'server_name', 'character_name', 'class_name', 'power_value', 'retrieved_at']
+                      'server_name', 'character_name', 'class_name', 'power_value', 'retrieved_at', 'div']
             return {columns[i]: value for i, value in enumerate(result[0])}
         
         # For server query, return all matching rows as a list
         if not character:
             columns = ['id', 'rank_position', 'change_amount', 'change_type', 
-                      'server_name', 'character_name', 'class_name', 'power_value', 'retrieved_at']
+                      'server_name', 'character_name', 'class_name', 'power_value', 'retrieved_at', 'div']
             return [{columns[i]: value for i, value in enumerate(row)} for row in result]
             
         return None
     finally:
         db.close()
 
-def insert_data(data, server=None, character=None):
+def insert_data(data, server=None, character=None, div=1):
     # First check if we already have recent data
-    recent_data = has_recent_data(server, character)
+    recent_data = has_recent_data(server, character, div)
     if recent_data:
         #logger.info("Recent data found, skipping database update")
         return {"success": True, "rows_affected": 0, "data": recent_data, "from_cache": True}
@@ -110,12 +113,12 @@ def insert_data(data, server=None, character=None):
             if change_value == '-':
                 change_value = '0'
             
-            # Insert or update record
+            # Insert or update record with div parameter
             query = text("""
                 INSERT INTO mabinogi_ranking 
-                (rank_position, change_amount, change_type, server_name, character_name, class_name, power_value)
-                VALUES (:rank, :change, :change_type, :server, :character, :class, :power)
-                ON CONFLICT (character_name, server_name) 
+                (rank_position, change_amount, change_type, server_name, character_name, class_name, power_value, div)
+                VALUES (:rank, :change, :change_type, :server, :character, :class, :power, :div)
+                ON CONFLICT (character_name, server_name, div) 
                 DO UPDATE SET 
                     rank_position = :rank,
                     change_amount = :change,
@@ -132,14 +135,15 @@ def insert_data(data, server=None, character=None):
                 'server': item['server'],
                 'character': item['character'],
                 'class': item['class'],
-                'power': power_value
+                'power': power_value,
+                'div': div  # Add div parameter to the query
             })
         
         db.commit()
         
         # If character specified, get and return that character's data
         if character and server:
-            result = get_character_data(server, character)
+            result = get_character_data(server, character, div)
             return {"success": True, "rows_affected": len(data), "data": result, "from_cache": False}
         
         return {"success": True, "rows_affected": len(data), "from_cache": False}
@@ -150,19 +154,38 @@ def insert_data(data, server=None, character=None):
     finally:
         db.close()
 
-def get_character_data(server, character):
+def get_character_data(server, character, div=1):
     db = SessionLocal()
     try:
         query = text("""
             SELECT * FROM mabinogi_ranking
-            WHERE server_name = :server AND character_name = :character
+            WHERE server_name = :server AND character_name = :character AND div = :div
         """)
-        result = db.execute(query, {'server': server, 'character': character}).fetchone()
+        result = db.execute(query, {'server': server, 'character': character, 'div': div}).fetchone()
         if result:
             # Convert DB row to dictionary
             columns = ['id', 'rank_position', 'change_amount', 'change_type', 
-                      'server_name', 'character_name', 'class_name', 'power_value', 'retrieved_at']
+                      'server_name', 'character_name', 'class_name', 'power_value', 'retrieved_at', 'div']
             return {columns[i]: value for i, value in enumerate(result)}
         return None
+    finally:
+        db.close()
+
+
+def get_980_data(server_name):
+    """Get characters beyond rank 1000 for exploration"""
+    db = SessionLocal()
+    try:
+        query = text("""
+            SELECT character_name FROM mabinogi_ranking
+            WHERE server_name = :server_name 
+            AND rank_position > 980
+            ORDER BY rank_position DESC
+        """)
+        results = db.execute(query, {'server_name': server_name}).fetchall()
+        return results
+    except Exception as e:
+        # logger.error(f"Error getting 980+ data: {e}")
+        return []
     finally:
         db.close()

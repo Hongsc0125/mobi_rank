@@ -9,3 +9,4 @@ beautifulsoup4
 starlette>=0.36.0
 sqlalchemy
 psycopg2-binary
+psutil>=5.9.0
