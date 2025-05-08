@@ -173,7 +173,7 @@ def get_character_data(server, character, div=1):
 
 
 def get_980_data(server_name):
-    """Get characters beyond rank 1000 for exploration"""
+    """Get characters beyond rank 980 for exploration"""
     db = SessionLocal()
     try:
         time_threshold = datetime.now() - timedelta(minutes=20)
@@ -184,7 +184,12 @@ def get_980_data(server_name):
             AND retrieved_at < :time_threshold
             ORDER BY rank_position DESC
         """)
-        results = db.execute(query, {'server_name': server_name}).fetchall()
+        params = {'server_name': server_name, 'time_threshold': time_threshold}
+        
+        # Add this log to check the parameters
+        logging.info(f"Executing query with params: {params}")
+        
+        results = db.execute(query, params).fetchall()
         return results
     except Exception as e:
         # logger.error(f"Error getting 980+ data: {e}")
