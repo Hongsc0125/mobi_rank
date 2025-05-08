@@ -416,8 +416,23 @@ def initialize_range_queue(server_num, boundary_characters):
         
     # 이전에 발견된 범위의 캐릭터 추가하여 지속적인 탐색
     if server_num in discovered_ranges:
-        # DB에서 발견된 범위 데이터의 캐릭터 추출
         try:
+            # 모든 서버의 데이터 비교를 위해 타임스탬프 확인
+            oldest_server = None
+            oldest_timestamp = datetime.max
+            
+            for srv, ranges in discovered_ranges.items():
+                if ranges:
+                    min_timestamp = min(ranges.values())
+                    if min_timestamp < oldest_timestamp:
+                        oldest_timestamp = min_timestamp
+                        oldest_server = srv
+            
+            # 우선순위가 가장 오래된 서버로 변경
+            if oldest_server and oldest_server != server_num:
+                logger.info(f"서버 {server_num} 대신 서버 {oldest_server}가 우선순위로 처리됨 (가장 오래된 데이터)")
+                server_num = oldest_server
+            
             # 서버 이름으로 변환
             server_name = get_server_name(server_num)
             
@@ -440,6 +455,12 @@ def initialize_range_queue(server_num, boundary_characters):
 def explore_ranges(driver, server_num, div=1):
     """시간 기반 결정으로 BFS를 사용하여 새 범위 탐색"""
     logger.info(f"서버 {server_num} 새 범위 탐색 시작")
+    
+    # 지속적으로 우선순위 조정
+    try:
+        initialize_range_queue(server_num, boundary_characters=[])
+    except Exception as e:
+        logger.error(f"우선순위 조정 중 오류: {e}")
     
     if server_num not in range_queue or not range_queue[server_num]:
         logger.warning(f"서버 {server_num}에 탐색할 큐가 없음")
@@ -1020,7 +1041,7 @@ if __name__ == "__main__":
     # 로깅 설정
     logging.basicConfig(
         level=logging.INFO,
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+        format='%(asctime)s - %(name)s - %(levellevelname)s - %(message)s'
     )
     
     try:

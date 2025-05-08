@@ -176,10 +176,12 @@ def get_980_data(server_name):
     """Get characters beyond rank 1000 for exploration"""
     db = SessionLocal()
     try:
+        time_threshold = datetime.now() - timedelta(minutes=20)
         query = text("""
             SELECT character_name FROM mabinogi_ranking
             WHERE server_name = :server_name 
             AND rank_position > 980
+            AND retrieved_at < :time_threshold
             ORDER BY rank_position DESC
         """)
         results = db.execute(query, {'server_name': server_name}).fetchall()
