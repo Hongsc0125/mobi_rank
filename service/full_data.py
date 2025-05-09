@@ -16,8 +16,9 @@ class SuppressChromedriverMessage(logging.Filter):
 logging.getLogger().addFilter(SuppressChromedriverMessage())
 
 def get_driver():
-    # Specify the correct version of chromedriver (135) to match Chrome version
-    chromedriver_autoinstaller.install(version="135")
+
+    chromedriver_autoinstaller.install()
+
     opts = Options()
     opts.add_argument("--headless=new")
     opts.add_argument("--no-sandbox")
