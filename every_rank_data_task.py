@@ -34,6 +34,7 @@ all_discovered_ranges = {}  # server_num -> set of ranges
 
 # Global state tracking
 discovered_ranges = {}  # server_num -> {range_text: timestamp}
+discovered_ranges_lock = threading.Lock() # Added lock for discovered_ranges
 last_base_refresh = {}  # server_num -> timestamp
 range_queue = {}        # server_num -> deque of ranges to explore
 
@@ -112,63 +113,79 @@ signal.signal(signal.SIGTERM, signal_handler)  # kill 명령어
 def load_discovered_ranges():
     """이전에 발견된 범위를 파일에서 로드"""
     global discovered_ranges
+    newly_loaded_ranges = {} 
     try:
         if os.path.exists(RANGES_FILE):
+            # File I/O outside the lock
             with open(RANGES_FILE, 'r', encoding='utf-8') as f:
                 data = json.load(f)
-                for server, ranges_dict in data.items(): # Renamed 'ranges' to 'ranges_dict' to avoid conflict
-                    server_num = int(server)
-                    discovered_ranges[server_num] = {}
-                    for range_text, timestamp_str in ranges_dict.items():
+            # Processing data outside the lock
+            for server_str, ranges_dict_val in data.items():
+                server_num = int(server_str)
+                newly_loaded_ranges[server_num] = {}
+                if isinstance(ranges_dict_val, dict): # Check if ranges_dict_val is a dict
+                    for range_text, timestamp_str in ranges_dict_val.items():
                         dt_obj = datetime.fromisoformat(timestamp_str)
-                        # Ensure the datetime object is KST-aware
                         if dt_obj.tzinfo is None or dt_obj.tzinfo.utcoffset(dt_obj) is None:
-                            # Naive datetime, assume it was KST or localize to KST
-                            discovered_ranges[server_num][range_text] = KST.localize(dt_obj)
+                            newly_loaded_ranges[server_num][range_text] = KST.localize(dt_obj)
                         else:
-                            # Aware datetime, convert to KST
-                            discovered_ranges[server_num][range_text] = dt_obj.astimezone(KST)
-                logger.info(f"파일에서 {sum(len(r) for r in discovered_ranges.values())}개 범위 로드 완료") # Adjusted sum()
+                            newly_loaded_ranges[server_num][range_text] = dt_obj.astimezone(KST)
+            if newly_loaded_ranges: 
+                logger.info(f"파일에서 {sum(len(r) for r in newly_loaded_ranges.values() if isinstance(r, dict))}개 범위 로드 완료")
+        
+        with discovered_ranges_lock: # Lock only for assignment
+            if newly_loaded_ranges:
+                discovered_ranges = newly_loaded_ranges
+            else: 
+                discovered_ranges = {i: {} for i in range(1, 8)}
+            
     except Exception as e:
-        logger.error(f"범위 로드 중 오류: {e}")
-        discovered_ranges = {i: {} for i in range(1, 8)}
+        logger.error(f"범위 로드 중 오류: {e}", exc_info=True)
+        with discovered_ranges_lock: 
+            discovered_ranges = {i: {} for i in range(1, 8)}
 
 def save_discovered_ranges():
     """발견된 범위를 파일에 저장"""
-    try:
-        # datetime 객체를 ISO 포맷 문자열로 변환
-        data_to_save = {}
-        for server, ranges in discovered_ranges.items():
-            data_to_save[str(server)] = {k: v.isoformat() for k, v in ranges.items()}
-            
+    data_to_save = {}
+    with discovered_ranges_lock: # Lock for reading
+        for server, ranges_dict_val in discovered_ranges.items():
+            if isinstance(ranges_dict_val, dict):
+                 data_to_save[str(server)] = {k: v.isoformat() for k, v in ranges_dict_val.items()}
+            else:
+                 data_to_save[str(server)] = {}
+    
+    try:    
         with open(RANGES_FILE, 'w', encoding='utf-8') as f:
             json.dump(data_to_save, f, ensure_ascii=False, indent=2)
-        # logger.info(f"{sum(len(ranges) for ranges in discovered_ranges.values())}개 범위 파일 저장 완료")
     except Exception as e:
-        logger.error(f"범위 저장 중 오류: {e}")
+        logger.error(f"범위 저장 중 오류: {e}", exc_info=True)
 
 def is_range_recent(server_num, range_text):
     """범위가 최근(10분 이내)에 수집되었는지 확인"""
-    if server_num not in discovered_ranges:
-        return False
-        
-    if range_text not in discovered_ranges[server_num]:
-        return False
-        
-    last_crawled = discovered_ranges[server_num][range_text]
+    last_crawled_local = None
+    with discovered_ranges_lock: # Acquire lock for reading
+        if server_num not in discovered_ranges:
+            return False
+        if range_text not in discovered_ranges[server_num]:
+            return False
+        last_crawled_local = discovered_ranges[server_num][range_text]
+    
     # Ensure comparison is between aware datetime objects
-    return (datetime.now(KST) - last_crawled) < timedelta(minutes=10)
+    return (datetime.now(KST) - last_crawled_local) < timedelta(minutes=10)
 
 def mark_range_crawled(server_num, range_text):
     """범위를 현재 타임스탬프와 함께 수집됨으로 표시"""
-    if server_num not in discovered_ranges:
-        discovered_ranges[server_num] = {}
+    save_needed = False
+    with discovered_ranges_lock: # Acquire lock for writing
+        if server_num not in discovered_ranges:
+            discovered_ranges[server_num] = {}
+        discovered_ranges[server_num][range_text] = datetime.now(KST)
         
-    discovered_ranges[server_num][range_text] = datetime.now(KST) # Use KST
+        if len(discovered_ranges[server_num]) % 10 == 0:
+            save_needed = True
     
-    # 가끔씩 파일에 저장 (I/O 부하 감소)
-    if len(discovered_ranges[server_num]) % 10 == 0:
-        save_discovered_ranges()
+    if save_needed:
+        save_discovered_ranges() # Called outside lock to prevent deadlock
 
 def should_refresh_base_pages(server_num):
     """기본 1-50 페이지를 갱신할 시간인지 확인 (~20분 후)"""
@@ -427,42 +444,61 @@ def initialize_range_queue(server_num, boundary_characters):
         range_queue[server_num].append(char)
         
     # 이전에 발견된 범위의 캐릭터 추가하여 지속적인 탐색
-    if server_num in discovered_ranges:
+    # Create a snapshot of discovered_ranges items under lock
+    current_discovered_ranges_snapshot = {}
+    with discovered_ranges_lock:
+        # Shallow copy of the outer dictionary is enough here, 
+        # as inner dicts' values (timestamps) are immutable.
+        # And we iterate over a list of values later.
+        current_discovered_ranges_snapshot = dict(discovered_ranges.items())
+
+    # Check if the original server_num key was present in the snapshot
+    if server_num in current_discovered_ranges_snapshot:
         try:
             # 모든 서버의 데이터 비교를 위해 타임스탬프 확인
             oldest_server = None
-            oldest_timestamp = datetime.max
+            # Initialize with a KST-aware far future datetime
+            oldest_timestamp = datetime(9999, 12, 31, 23, 59, 59, 999999, tzinfo=KST) 
             
-            for srv, ranges in discovered_ranges.items():
-                if ranges:
-                    min_timestamp = min(ranges.values())
-                    if min_timestamp < oldest_timestamp:
-                        oldest_timestamp = min_timestamp
+            for srv, ranges_dict_val in current_discovered_ranges_snapshot.items():
+                if ranges_dict_val: # Check if the server has any ranges
+                    # Create a list of valid timestamps before calling min()
+                    valid_timestamps = [ts for ts in ranges_dict_val.values() if isinstance(ts, datetime)]
+                    if not valid_timestamps:
+                        continue
+                    min_timestamp_for_srv = min(valid_timestamps)
+                    if min_timestamp_for_srv < oldest_timestamp:
+                        oldest_timestamp = min_timestamp_for_srv
                         oldest_server = srv
             
+            effective_server_num = server_num
             # 우선순위가 가장 오래된 서버로 변경
             if oldest_server and oldest_server != server_num:
                 logger.info(f"서버 {server_num} 대신 서버 {oldest_server}가 우선순위로 처리됨 (가장 오래된 데이터)")
-                server_num = oldest_server
+                effective_server_num = oldest_server
             
             # 서버 이름으로 변환
-            server_name = get_server_name(server_num)
+            server_name = get_server_name(effective_server_num)
             
             # 908등 이상의 캐릭터를 가져옴 (981등 ~ 1000등)
-            logger.info(f"서버 {server_num}, {server_name}에서 981등 이상 캐릭터 로드 중...")
+            logger.info(f"서버 {effective_server_num}, {server_name}에서 981등 이상 캐릭터 로드 중...")
             results = get_980_data(server_name)
 
             # 탐색을 위해 이 캐릭터들을 큐에 추가
             chars_added = 0
+            # Ensure range_queue for effective_server_num exists
+            if effective_server_num not in range_queue:
+                range_queue[effective_server_num] = deque()
+                
             for row in results:
                 char = row[0]
-                if char not in range_queue[server_num]:
-                    range_queue[server_num].append(char)
+                if char not in range_queue[effective_server_num]: # Check against the correct queue
+                    range_queue[effective_server_num].append(char)
                     chars_added += 1
                     
-            logger.info(f"서버 {server_num}: 908등 이상 {chars_added}개 캐릭터를 탐색 큐에 추가")
+            logger.info(f"서버 {effective_server_num}: 908등 이상 {chars_added}개 캐릭터를 탐색 큐에 추가")
         except Exception as e:
-            logger.error(f"이전 범위 캐릭터 로드 중 오류: {e}")
+            logger.error(f"이전 범위 캐릭터 로드 중 오류: {e}", exc_info=True)
 
 def explore_ranges(driver, server_num, div=1):
     """시간 기반 결정으로 BFS를 사용하여 새 범위 탐색"""
@@ -683,7 +719,7 @@ def optimized_base_pages_refresh_worker():
                     # 마지막 갱신 시간 업데이트
                     last_refresh[current_server] = datetime.now(KST) # Use KST
                 except Exception as e:
-                    logger.error(f"서버 {current_server} 기본 페이지 갱신 중 오류: {e}")
+                    logger.error(f"서버 {current_server} 기본 페이지 갱신 중 오류: {e}", exc_info=True)
                 
                 update_thread_status(thread_name, "완료", f"서버 {current_server} 갱신 완료")
             else:
