@@ -22,8 +22,12 @@ import psutil
 import gc
 import signal
 import sys
+import pytz # Added import
 
 logger = logging.getLogger(__name__)
+
+# Define KST timezone
+KST = pytz.timezone('Asia/Seoul') # Added KST timezone
 
 # Track global discovered ranges to avoid duplicate work across runs
 all_discovered_ranges = {}  # server_num -> set of ranges
@@ -49,7 +53,7 @@ thread_status_lock = threading.Lock()
 def update_thread_status(thread_name, status, details=None):
     """스레드 상태 업데이트 및 로깅"""
     with thread_status_lock:
-        timestamp = datetime.now().strftime("%H:%M:%S")
+        timestamp = datetime.now(KST).strftime("%H:%M:%S") # Use KST
         thread_status[thread_name] = {
             'status': status,
             'details': details,
@@ -111,14 +115,20 @@ def load_discovered_ranges():
     try:
         if os.path.exists(RANGES_FILE):
             with open(RANGES_FILE, 'r', encoding='utf-8') as f:
-                # 문자열 타임스탬프를 datetime 객체로 변환
                 data = json.load(f)
-                for server, ranges in data.items():
-                    server_num = int(server)  # JSON 키는 문자열
+                for server, ranges_dict in data.items(): # Renamed 'ranges' to 'ranges_dict' to avoid conflict
+                    server_num = int(server)
                     discovered_ranges[server_num] = {}
-                    for range_text, timestamp_str in ranges.items():
-                        discovered_ranges[server_num][range_text] = datetime.fromisoformat(timestamp_str)
-                logger.info(f"파일에서 {sum(len(ranges) for ranges in discovered_ranges.values())}개 범위 로드 완료")
+                    for range_text, timestamp_str in ranges_dict.items():
+                        dt_obj = datetime.fromisoformat(timestamp_str)
+                        # Ensure the datetime object is KST-aware
+                        if dt_obj.tzinfo is None or dt_obj.tzinfo.utcoffset(dt_obj) is None:
+                            # Naive datetime, assume it was KST or localize to KST
+                            discovered_ranges[server_num][range_text] = KST.localize(dt_obj)
+                        else:
+                            # Aware datetime, convert to KST
+                            discovered_ranges[server_num][range_text] = dt_obj.astimezone(KST)
+                logger.info(f"파일에서 {sum(len(r) for r in discovered_ranges.values())}개 범위 로드 완료") # Adjusted sum()
     except Exception as e:
         logger.error(f"범위 로드 중 오류: {e}")
         discovered_ranges = {i: {} for i in range(1, 8)}
@@ -146,14 +156,15 @@ def is_range_recent(server_num, range_text):
         return False
         
     last_crawled = discovered_ranges[server_num][range_text]
-    return (datetime.now() - last_crawled) < timedelta(minutes=10)
+    # Ensure comparison is between aware datetime objects
+    return (datetime.now(KST) - last_crawled) < timedelta(minutes=10)
 
 def mark_range_crawled(server_num, range_text):
     """범위를 현재 타임스탬프와 함께 수집됨으로 표시"""
     if server_num not in discovered_ranges:
         discovered_ranges[server_num] = {}
         
-    discovered_ranges[server_num][range_text] = datetime.now()
+    discovered_ranges[server_num][range_text] = datetime.now(KST) # Use KST
     
     # 가끔씩 파일에 저장 (I/O 부하 감소)
     if len(discovered_ranges[server_num]) % 10 == 0:
@@ -164,7 +175,7 @@ def should_refresh_base_pages(server_num):
     if server_num not in last_base_refresh:
         return True
         
-    return (datetime.now() - last_base_refresh[server_num]) > timedelta(minutes=20)
+    return (datetime.now(KST) - last_base_refresh[server_num]) > timedelta(minutes=20)
 
 def get_driver(high_performance=False):
     """성능 최적화된 크롬 드라이버 인스턴스 생성"""
@@ -386,7 +397,8 @@ def crawl_base_pages(driver, server_num, div=1):
             continue
         
         # 데이터 저장
-        insert_data(parsed_data, server=None, character=None, div=div)
+        now_kst = datetime.now(KST)
+        insert_data(parsed_data, server=None, character=None, div=div, retrieved_at_kst=now_kst)
         # logger.info(f"서버 {server_num}, 페이지 {page_num}에서 {len(parsed_data)}개 항목 저장됨")
         
         # 수집됨으로 표시
@@ -399,7 +411,7 @@ def crawl_base_pages(driver, server_num, div=1):
             logger.info(f"경계 캐릭터들 (981-1000위): {boundary_characters}")
     
     # 마지막 갱신 시간 업데이트
-    last_base_refresh[server_num] = datetime.now()
+    last_base_refresh[server_num] = datetime.now(KST) # Use KST
     
     logger.info(f"서버 {server_num} 기본 페이지 크롤링 완료: {new_ranges_count}개 페이지 업데이트됨")
     return boundary_characters
@@ -512,7 +524,8 @@ def explore_ranges(driver, server_num, div=1):
             continue
         
         # 데이터 저장 및 범위 수집됨으로 표시
-        insert_data(parsed_data, server=None, character=None, div=div)
+        now_kst = datetime.now(KST)
+        insert_data(parsed_data, server=None, character=None, div=div, retrieved_at_kst=now_kst)
         mark_range_crawled(server_num, rank_range)
         new_ranges_found += 1
         
@@ -617,7 +630,8 @@ class DataCollector:
         with self.lock:
             if self.batch:
                 try:
-                    insert_data(self.batch, server=None, character=None, div=self.div)
+                    now_kst = datetime.now(KST)
+                    insert_data(self.batch, server=None, character=None, div=self.div, retrieved_at_kst=now_kst)
                     # logger.info(f"{len(self.batch)}개 항목 일괄 저장 완료")
                 except Exception as e:
                     logger.error(f"배치 데이터 저장 중 오류: {e}")
@@ -644,7 +658,7 @@ def optimized_base_pages_refresh_worker():
     
     # 모든 서버에 대한 마지막 갱신 시간 추적
     refresh_interval = timedelta(minutes=20)
-    last_refresh = {i: datetime.now() - refresh_interval for i in range(1, 8)}
+    last_refresh = {i: datetime.now(KST) - refresh_interval for i in range(1, 8)} # Use KST
     
     # 현재 처리 중인 서버 (1-7 사이에서 순환)
     current_server = 1
@@ -652,7 +666,7 @@ def optimized_base_pages_refresh_worker():
     try:
         while not shutdown_event.is_set():
             # 현재 서버가 갱신 필요한지 확인
-            if datetime.now() - last_refresh[current_server] > refresh_interval:
+            if datetime.now(KST) - last_refresh[current_server] > refresh_interval: # Use KST
                 update_thread_status(thread_name, "페이지 갱신 중", f"서버 {current_server} 갱신 시작")
                 # logger.info(f"서버 {current_server} 기본 페이지 갱신 시작")
                 
@@ -667,7 +681,7 @@ def optimized_base_pages_refresh_worker():
                         logger.info(f"서버 {current_server} 경계 캐릭터 {len(boundary_chars)}개 발견")
                     
                     # 마지막 갱신 시간 업데이트
-                    last_refresh[current_server] = datetime.now()
+                    last_refresh[current_server] = datetime.now(KST) # Use KST
                 except Exception as e:
                     logger.error(f"서버 {current_server} 기본 페이지 갱신 중 오류: {e}")
                 
@@ -909,13 +923,13 @@ def thread_monitor():
                 # 죽은 스레드 재시작
                 for dead_thread in dead_threads:
                     # 서버 탐색 스레드만 재시작
-                    if dead_thread.name.startswith("server-") and "explorer" in dead_thread.name:
+                    if (dead_thread.name.startswith("server-") and "explorer" in dead_thread.name):
                         try:
                             # 서버 번호 추출
                             server_num = int(dead_thread.name.split('-')[1])
                             
                             # 최소 1분 간격으로만 재시작 (너무 잦은 재시작 방지)
-                            current_time = datetime.now()
+                            current_time = datetime.now(KST) # Use KST
                             if dead_thread.name in last_restart_time:
                                 if (current_time - last_restart_time[dead_thread.name]).total_seconds() < 60:
                                     logger.info(f"스레드 {dead_thread.name} 최근에 재시작되었습니다. 잠시 대기...")
@@ -937,14 +951,15 @@ def thread_monitor():
                             
                             # 스레드 시작
                             new_thread.start()
-                            last_restart_time[new_thread.name] = current_time
+                            last_restart_time[new_thread.name] = current_time # current_time is KST
                             update_thread_status(thread_name, "스레드 재시작됨", 
                                         f"서버 {server_num} 탐색 스레드가 재시작되었습니다.")
                         except Exception as e:
                             logger.error(f"스레드 재시작 중 오류: {e}", exc_info=True)
             
             # 1분마다 전체 상태 요약 출력
-            if datetime.now().minute % 1 == 0 and datetime.now().second < 10:
+            now_kst_monitor = datetime.now(KST) # Use KST
+            if now_kst_monitor.minute % 1 == 0 and now_kst_monitor.second < 10:
                 log_all_thread_status()
             
             # 스레드 모니터링은 10초마다 수행
@@ -1041,7 +1056,7 @@ if __name__ == "__main__":
     # 로깅 설정
     logging.basicConfig(
         level=logging.INFO,
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+        format='%(asctime)s - %(name)s - %(levellevel)s - %(message)s'
     )
     
     try:

@@ -2,6 +2,10 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 import logging
 from datetime import datetime, timedelta
+import pytz # Added import
+
+# Define KST timezone
+KST = pytz.timezone('Asia/Seoul') # Added KST timezone
 
 # #logger = logging.get#logger(__name__)
 
@@ -34,7 +38,7 @@ def has_recent_data(server, character=None, div=1):
     """
     db = SessionLocal()
     try:
-        time_threshold = datetime.now() - timedelta(minutes=10)
+        time_threshold = datetime.now(KST) - timedelta(minutes=10) # Use KST
         
         # Build query based on whether we're looking for a specific character
         if character:
@@ -90,8 +94,9 @@ def has_recent_data(server, character=None, div=1):
     finally:
         db.close()
 
-def insert_data(data, server=None, character=None, div=1):
+def insert_data(data, server=None, character=None, div=1, retrieved_at_kst=None): # Added retrieved_at_kst
     # First check if we already have recent data
+    # This call to has_recent_data will now use KST due to changes above
     recent_data = has_recent_data(server, character, div)
     if recent_data:
         #logger.info("Recent data found, skipping database update")
@@ -102,6 +107,8 @@ def insert_data(data, server=None, character=None, div=1):
     try:
         # We don't want to delete all existing data anymore
         # db.execute(text("DELETE FROM mabinogi_ranking"))
+
+        current_time_for_db = retrieved_at_kst if retrieved_at_kst else datetime.now(KST)
         
         for item in data:
             # Convert comma-separated strings to numbers
@@ -116,8 +123,8 @@ def insert_data(data, server=None, character=None, div=1):
             # Insert or update record with div parameter
             query = text("""
                 INSERT INTO mabinogi_ranking 
-                (rank_position, change_amount, change_type, server_name, character_name, class_name, power_value, div)
-                VALUES (:rank, :change, :change_type, :server, :character, :class, :power, :div)
+                (rank_position, change_amount, change_type, server_name, character_name, class_name, power_value, div, retrieved_at)
+                VALUES (:rank, :change, :change_type, :server, :character, :class, :power, :div, :retrieved_at_val)
                 ON CONFLICT (character_name, server_name, div) 
                 DO UPDATE SET 
                     rank_position = :rank,
@@ -125,7 +132,7 @@ def insert_data(data, server=None, character=None, div=1):
                     change_type = :change_type,
                     class_name = :class,
                     power_value = :power,
-                    retrieved_at = NOW()
+                    retrieved_at = :retrieved_at_val
             """)
             
             db.execute(query, {
@@ -136,7 +143,8 @@ def insert_data(data, server=None, character=None, div=1):
                 'character': item['character'],
                 'class': item['class'],
                 'power': power_value,
-                'div': div  # Add div parameter to the query
+                'div': div,  # Add div parameter to the query
+                'retrieved_at_val': current_time_for_db # Use the KST timestamp
             })
         
         db.commit()
@@ -176,7 +184,7 @@ def get_980_data(server_name):
     """Get characters beyond rank 980 for exploration"""
     db = SessionLocal()
     try:
-        time_threshold = datetime.now() - timedelta(minutes=20)
+        time_threshold = datetime.now(KST) - timedelta(minutes=20) # Use KST
         query = text("""
             SELECT character_name FROM mabinogi_ranking
             WHERE server_name = :server_name 
