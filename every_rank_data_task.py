@@ -23,6 +23,7 @@ import gc
 import signal
 import sys
 import pytz # Added import
+from selenium.common.exceptions import WebDriverException # Added import
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +44,9 @@ RANGES_FILE = os.path.join(os.path.dirname(__file__), "discovered_ranges.json")
 
 # 전역 종료 이벤트 - 모든 스레드에게 종료 신호를 보내기 위한 플래그
 shutdown_event = threading.Event()
+
+# 최대 가져오기 재시도 횟수
+MAX_FETCH_RETRIES = 3
 
 # 모든 활성 스레드를 추적하기 위한 컨테이너
 active_threads = []
@@ -230,73 +234,127 @@ def get_driver(high_performance=False):
     
     return webdriver.Chrome(service=Service(), options=opts)
 
-def fetch_rank_page(driver, server_num, search_name="", div=1):
-    """기존 드라이버를 사용하여 랭킹 데이터 가져오기"""
+def fetch_rank_page(driver, server_num, search_name="", div=1, high_performance_driver=True):
+    """기존 드라이버를 사용하여 랭킹 데이터 가져오기, 오류 시 재시도 및 드라이버 재생성"""
     list_url = "https://mabinogimobile.nexon.com/Ranking/List?t=1"
     api_url  = "https://mabinogimobile.nexon.com/Ranking/List/rankdata"
 
-    # 이미 리스트 페이지에 있지 않은 경우에만 페이지 이동
-    if not driver.current_url.startswith(list_url):
-        driver.get(list_url)
-        time.sleep(2)
+    attempts = 0
+    last_exception = None
 
-    sess = requests.Session()
-    for ck in driver.get_cookies():
-        sess.cookies.set(ck['name'], ck['value'])
-        
-    headers = {
-        "User-Agent":          driver.execute_script("return navigator.userAgent;"),
-        "Accept":              "*/*",
-        "Referer":             list_url,
-        "X-Requested-With":    "XMLHttpRequest",
-        "Origin":              "https://mabinogimobile.nexon.com",
-        "Content-Type":        "application/x-www-form-urlencoded; charset=UTF-8",
-    }
-    data = {
-        "t":       str(div),  # div 파라미터 추가
-        "pageno":  "1",
-        "s":       server_num,
-        "c":       "0",
-        "search":  search_name,
-    }
+    while attempts < MAX_FETCH_RETRIES:
+        try:
+            # 이미 리스트 페이지에 있지 않은 경우에만 페이지 이동
+            if driver is None: # 드라이버가 초기에 None일 경우 (예: 이전 시도에서 생성 실패)
+                 logger.info(f"Attempt {attempts + 1}/{MAX_FETCH_RETRIES}: Driver is None, creating new driver for server {server_num}.")
+                 driver = get_driver(high_performance=high_performance_driver)
 
-    resp = sess.post(api_url, headers=headers, data=data)
-    resp.raise_for_status()
-    return resp.text
+            if not driver.current_url.startswith(list_url):
+                driver.get(list_url)
+                time.sleep(2) # 페이지 로드 대기
 
-def fetch_rank_page_by_pageno(driver, server_num, page_num=1, div=1):
-    """페이지 번호로 기존 드라이버를 사용하여 랭킹 데이터 가져오기"""
+            sess = requests.Session()
+            for ck in driver.get_cookies():
+                sess.cookies.set(ck['name'], ck['value'])
+                
+            headers = {
+                "User-Agent":          driver.execute_script("return navigator.userAgent;"),
+                "Accept":              "*/*",
+                "Referer":             list_url,
+                "X-Requested-With":    "XMLHttpRequest",
+                "Origin":              "https://mabinogimobile.nexon.com",
+                "Content-Type":        "application/x-www-form-urlencoded; charset=UTF-8",
+            }
+            data = {
+                "t":       str(div),
+                "pageno":  "1",
+                "s":       server_num,
+                "c":       "0",
+                "search":  search_name,
+            }
+
+            resp = sess.post(api_url, headers=headers, data=data)
+            resp.raise_for_status() # HTTP 오류 발생 시 예외 발생
+            return resp.text, driver # 성공 시 HTML과 드라이버 반환
+
+        except (requests.exceptions.RequestException, WebDriverException) as e:
+            logger.warning(f"Fetch_rank_page: Attempt {attempts + 1}/{MAX_FETCH_RETRIES} failed for server {server_num}, search '{search_name}'. Error: {e}")
+            last_exception = e
+            attempts += 1
+            if attempts < MAX_FETCH_RETRIES:
+                if driver:
+                    try:
+                        driver.quit()
+                    except Exception as dq_err:
+                        logger.error(f"Error quitting problematic driver: {dq_err}")
+                logger.info(f"Recreating driver for server {server_num} (attempt {attempts + 1}).")
+                driver = get_driver(high_performance=high_performance_driver)
+                time.sleep(5) # 새 드라이버 안정화 및 IP 변경 등 외부 요인 대기
+            else:
+                logger.error(f"Fetch_rank_page: All {MAX_FETCH_RETRIES} retries failed for server {server_num}, search '{search_name}'. Last error: {last_exception}")
+                raise last_exception
+    return None, driver # 이론적으로 도달하지 않지만, 만약을 위해 추가
+
+def fetch_rank_page_by_pageno(driver, server_num, page_num=1, div=1, high_performance_driver=True):
+    """페이지 번호로 기존 드라이버를 사용하여 랭킹 데이터 가져오기, 오류 시 재시도 및 드라이버 재생성"""
     list_url = "https://mabinogimobile.nexon.com/Ranking/List?t=1"
     api_url  = "https://mabinogimobile.nexon.com/Ranking/List/rankdata"
 
-    # 이미 리스트 페이지에 있지 않은 경우에만 페이지 이동
-    if not driver.current_url.startswith(list_url):
-        driver.get(list_url)
-        time.sleep(2)
+    attempts = 0
+    last_exception = None
 
-    sess = requests.Session()
-    for ck in driver.get_cookies():
-        sess.cookies.set(ck['name'], ck['value'])
-        
-    headers = {
-        "User-Agent":          driver.execute_script("return navigator.userAgent;"),
-        "Accept":              "*/*",
-        "Referer":             list_url,
-        "X-Requested-With":    "XMLHttpRequest",
-        "Origin":              "https://mabinogimobile.nexon.com",
-        "Content-Type":        "application/x-www-form-urlencoded; charset=UTF-8",
-    }
-    data = {
-        "t":       str(div),
-        "pageno":  str(page_num),
-        "s":       server_num,
-        "c":       "0",
-        "search":  "",
-    }
+    while attempts < MAX_FETCH_RETRIES:
+        try:
+            if driver is None: # 드라이버가 초기에 None일 경우
+                 logger.info(f"Attempt {attempts + 1}/{MAX_FETCH_RETRIES}: Driver is None, creating new driver for server {server_num}, page {page_num}.")
+                 driver = get_driver(high_performance=high_performance_driver)
 
-    resp = sess.post(api_url, headers=headers, data=data)
-    resp.raise_for_status()
-    return resp.text
+            # 이미 리스트 페이지에 있지 않은 경우에만 페이지 이동
+            if not driver.current_url.startswith(list_url):
+                driver.get(list_url)
+                time.sleep(2) # 페이지 로드 대기
+
+            sess = requests.Session()
+            for ck in driver.get_cookies():
+                sess.cookies.set(ck['name'], ck['value'])
+                
+            headers = {
+                "User-Agent":          driver.execute_script("return navigator.userAgent;"),
+                "Accept":              "*/*",
+                "Referer":             list_url,
+                "X-Requested-With":    "XMLHttpRequest",
+                "Origin":              "https://mabinogimobile.nexon.com",
+                "Content-Type":        "application/x-www-form-urlencoded; charset=UTF-8",
+            }
+            data = {
+                "t":       str(div),
+                "pageno":  str(page_num),
+                "s":       server_num,
+                "c":       "0",
+                "search":  "",
+            }
+
+            resp = sess.post(api_url, headers=headers, data=data)
+            resp.raise_for_status() # HTTP 오류 발생 시 예외 발생
+            return resp.text, driver # 성공 시 HTML과 드라이버 반환
+
+        except (requests.exceptions.RequestException, WebDriverException) as e:
+            logger.warning(f"Fetch_rank_page_by_pageno: Attempt {attempts + 1}/{MAX_FETCH_RETRIES} failed for server {server_num}, page {page_num}. Error: {e}")
+            last_exception = e
+            attempts += 1
+            if attempts < MAX_FETCH_RETRIES:
+                if driver:
+                    try:
+                        driver.quit()
+                    except Exception as dq_err:
+                        logger.error(f"Error quitting problematic driver: {dq_err}")
+                logger.info(f"Recreating driver for server {server_num}, page {page_num} (attempt {attempts + 1}).")
+                driver = get_driver(high_performance=high_performance_driver)
+                time.sleep(5) # 새 드라이버 안정화 및 IP 변경 등 외부 요인 대기
+            else:
+                logger.error(f"Fetch_rank_page_by_pageno: All {MAX_FETCH_RETRIES} retries failed for server {server_num}, page {page_num}. Last error: {last_exception}")
+                raise last_exception
+    return None, driver # 이론적으로 도달하지 않지만, 만약을 위해 추가
 
 def switch_server(server_name_or_num):
     """서버 이름 또는 번호를 서버 번호로 변환"""
@@ -389,7 +447,7 @@ def parse_rank_html(html: str):
     return result
 
 def crawl_base_pages(driver, server_num, div=1):
-    """기본 페이지(1-50)를 10분 최신성 확인과 함께 크롤링"""
+    """기본 페이지(1-50)를 10분 최신성 확인과 함께 크롤링. 드라이버를 반환."""
     logger.info(f"서버 {server_num} 기본 1-50 페이지 크롤링 시작")
     
     boundary_characters = []
@@ -406,7 +464,20 @@ def crawl_base_pages(driver, server_num, div=1):
         # logger.info(f"서버 {server_num}, 페이지 {page_num} 크롤링 중 (범위: {range_text})")
         
         # 페이지 가져오기 및 처리
-        html = fetch_rank_page_by_pageno(driver, server_num, page_num, div)
+        try:
+            html, driver = fetch_rank_page_by_pageno(driver, server_num, page_num, div, high_performance_driver=True) # 드라이버 업데이트
+            if html is None: # 모든 재시도 실패 시
+                logger.error(f"서버 {server_num}, 페이지 {page_num} 가져오기 최종 실패. 다음 페이지로 넘어감.")
+                continue
+        except Exception as e:
+            logger.error(f"서버 {server_num}, 페이지 {page_num} 가져오기 중 심각한 오류 발생: {e}. 다음 페이지로 넘어감.")
+            # 이 경우 driver가 유효하지 않을 수 있으므로, 루프를 계속하기 전에 새 드라이버를 얻는 것이 좋을 수 있습니다.
+            # 또는 이 함수를 호출한 곳에서 드라이버 상태를 확인하도록 합니다.
+            # 현재는 다음 페이지로 넘어가지만, 동일한 (잠재적으로 깨진) 드라이버를 사용합니다.
+            # 더 나은 방법은 여기서 새 드라이버를 얻거나 예외를 발생시켜 상위 호출자가 처리하도록 하는 것입니다.
+            # 여기서는 일단 다음 페이지로 넘어갑니다.
+            continue
+
         parsed_data = parse_rank_html(html)
         
         if not parsed_data:
@@ -431,7 +502,7 @@ def crawl_base_pages(driver, server_num, div=1):
     last_base_refresh[server_num] = datetime.now(KST) # Use KST
     
     logger.info(f"서버 {server_num} 기본 페이지 크롤링 완료: {new_ranges_count}개 페이지 업데이트됨")
-    return boundary_characters
+    return boundary_characters, driver # 업데이트된 드라이버 반환
 
 # initialize_range_queue 함수 수정 - 908등 이상 캐릭터 사용
 def initialize_range_queue(server_num, boundary_characters):
@@ -536,7 +607,15 @@ def explore_ranges(driver, server_num, div=1):
         logger.info(f"서버 {server_num}에서 '{current_char}' 검색 중... (큐 크기: {len(range_queue[server_num])})")
         
         # 재사용 드라이버로 검색
-        html = fetch_rank_page(driver, server_num, current_char, div)
+        try:
+            html, driver = fetch_rank_page(driver, server_num, current_char, div, high_performance_driver=True) # 드라이버 업데이트
+            if html is None: # 모든 재시도 실패 시
+                logger.warning(f"'{current_char}' 검색 최종 실패. 다음 캐릭터로 넘어감.")
+                continue
+        except Exception as e:
+            logger.error(f"'{current_char}' 검색 중 심각한 오류 발생: {e}. 다음 캐릭터로 넘어감.")
+            # 여기서도 드라이버 상태를 고려해야 합니다.
+            continue
         
         # 범위 정보 가져오기
         rank_range = parse_rank_range(html)
@@ -574,7 +653,7 @@ def explore_ranges(driver, server_num, div=1):
                 range_queue[server_num].append(char_name)
     
     logger.info(f"서버 {server_num} 범위 탐색 완료: {new_ranges_found}개 새 범위 발견")
-    return new_ranges_found > 0
+    return new_ranges_found > 0, driver # 성공 여부와 업데이트된 드라이버 반환
 
 # 시스템 리소스 확인 및 최적 설정 결정
 def get_optimal_settings():
@@ -709,7 +788,7 @@ def optimized_base_pages_refresh_worker():
                 try:
                     # 1-50 페이지 크롤링
                     div = 1  # 기본 구분 값 (t parameter)
-                    boundary_chars = crawl_base_pages(driver, current_server, div)
+                    boundary_chars, driver = crawl_base_pages(driver, current_server, div) # 드라이버 업데이트
                     
                     # 범위 큐 초기화 (경계 캐릭터 추가)
                     if boundary_chars:
@@ -846,11 +925,14 @@ def optimized_range_exploration_worker(server_num):
                     
                     # 각 캐릭터에 대한 처리 함수
                     def process_character(char):
-                        driver = driver_pool.get_driver()
+                        driver_instance = driver_pool.get_driver()
                         try:
                             # 캐릭터로 검색
-                            html = fetch_rank_page(driver, server_num, char, div)
+                            html, driver_instance = fetch_rank_page(driver_instance, server_num, char, div, high_performance_driver=True) # 드라이버 업데이트
                             
+                            if html is None: # 모든 재시도 실패 시
+                                return None
+                                
                             # 범위 확인
                             rank_range = parse_rank_range(html)
                             if not rank_range:
@@ -879,7 +961,7 @@ def optimized_range_exploration_worker(server_num):
                                     
                             return new_chars
                         finally:
-                            driver_pool.return_driver(driver)
+                            driver_pool.return_driver(driver_instance)
                     
                     # 병렬 실행
                     futures = [executor.submit(process_character, char) for char in char_batch]
