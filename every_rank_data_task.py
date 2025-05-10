@@ -13,7 +13,6 @@ from service.db import insert_data, get_980_data
 from collections import deque
 import re
 import threading
-import json
 from datetime import datetime, timedelta
 import multiprocessing
 from concurrent.futures import ThreadPoolExecutor
@@ -102,55 +101,71 @@ def db_load_discovered_ranges():
 
 def db_save_discovered_ranges():
     """발견된 범위 정보를 데이터베이스에 저장 (PostgreSQL)"""
-    try:
-        # 세션 로컬 임포트
-        from service.db import SessionLocal, engine
-        from sqlalchemy import text
-        
-        # 세션 생성
-        session = SessionLocal()
-        
+    from service.db import SessionLocal, engine
+    from sqlalchemy import text
+    from sqlalchemy.exc import OperationalError
+    import time
+
+    MAX_RETRIES = 3
+    RETRY_DELAY = 1  # 초 단위 대기 시간
+
+    for attempt in range(MAX_RETRIES):
         try:
-            # 현재 discovered_ranges 복사본 생성
-            with discovered_ranges_lock:
-                ranges_to_save = {k: v.copy() for k, v in discovered_ranges.items()}
+            # 세션 생성 (각 시도마다 새로운 세션)
+            session = SessionLocal()
             
-            # 각 범위 정보 저장
-            for server_num, ranges_dict in ranges_to_save.items():
-                for range_text, last_crawled in ranges_dict.items():
-                    # ISO 포맷으로 변환
-                    last_crawled_iso = last_crawled.isoformat()
-                    
-                    # PostgreSQL UPSERT 쿼리 실행
-                    query = text("""
-                        INSERT INTO discovered_ranges 
-                            (server_num, range_text, last_crawled) 
-                        VALUES 
-                            (:server_num, :range_text, :last_crawled)
-                        ON CONFLICT (server_num, range_text) 
-                        DO UPDATE SET 
-                            last_crawled = :last_crawled,
-                            timestamp = CURRENT_TIMESTAMP
-                    """)
-                    
-                    # 쿼리 실행
-                    session.execute(query, {
-                        'server_num': server_num,
-                        'range_text': range_text,
-                        'last_crawled': last_crawled_iso
-                    })
+            try:
+                # 현재 discovered_ranges 복사본 생성
+                with discovered_ranges_lock:
+                    ranges_to_save = {k: v.copy() for k, v in discovered_ranges.items()}
+                
+                # 트랜잭션 시작
+                with session.begin():
+                    # 각 범위 정보 저장
+                    for server_num, ranges_dict in ranges_to_save.items():
+                        for range_text, last_crawled in ranges_dict.items():
+                            # ISO 포맷으로 변환
+                            last_crawled_iso = last_crawled.isoformat()
+                            
+                            # PostgreSQL UPSERT 쿼리 실행
+                            query = text("""                                
+                                INSERT INTO discovered_ranges 
+                                    (server_num, range_text, last_crawled) 
+                                VALUES 
+                                    (:server_num, :range_text, :last_crawled)
+                                ON CONFLICT (server_num, range_text) 
+                                DO UPDATE SET 
+                                    last_crawled = :last_crawled,
+                                    timestamp = CURRENT_TIMESTAMP
+                            """)
+                            
+                            # 쿼리 실행
+                            session.execute(query, {
+                                'server_num': server_num,
+                                'range_text': range_text,
+                                'last_crawled': last_crawled_iso
+                            })
+                
+                # 성공적으로 커밋되면 루프 종료
+                break
             
-            # 변경사항 커밋
-            session.commit()
+            except OperationalError as e:
+                session.rollback()
+                logger.warning(f"데드락 감지 (시도 {attempt + 1}/{MAX_RETRIES}): {e}")
+                
+                # 마지막 시도가 아니라면 대기 후 재시도
+                if attempt < MAX_RETRIES - 1:
+                    time.sleep(RETRY_DELAY * (attempt + 1))  # 점진적 대기 시간
+                else:
+                    logger.error(f"데드락 해결 실패: {e}")
+                    raise
             
+            finally:
+                session.close()
+        
         except Exception as e:
-            session.rollback()
-            raise e
-        finally:
-            session.close()
-            
-    except Exception as e:
-        logger.error(f"DB에 범위 저장 중 오류: {e}", exc_info=True)
+            logger.error(f"DB에 범위 저장 중 오류: {e}", exc_info=True)
+            break
 
 def load_discovered_ranges():
     """데이터베이스에서 발견된 범위 정보 로드"""

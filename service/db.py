@@ -3,11 +3,27 @@ from sqlalchemy.orm import sessionmaker
 import logging
 from datetime import datetime, timedelta
 import pytz # Added import
+from sqlalchemy import types, Text
+from pytz import timezone
 
-# Define KST timezone
-KST = pytz.timezone('Asia/Seoul') # Added KST timezone
+KST = timezone('Asia/Seoul')
 
-# #logger = logging.get#logger(__name__)
+class KSTDateTime(types.TypeDecorator):
+    impl = types.DateTime
+    cache_ok = True
+    
+    def process_bind_param(self, value, dialect):
+        if value is not None:
+            if not value.tzinfo:
+                raise ValueError("Timezone-aware datetime required")
+            return value.astimezone(KST)
+        return None
+
+    def process_result_value(self, value, dialect):
+        if value is not None:
+            return KST.localize(value)
+        return None
+
 
 # 데이터베이스 엔진 생성
 engine = create_engine(
@@ -108,7 +124,8 @@ def insert_data(data, server=None, character=None, div=1, retrieved_at_kst=None)
         # We don't want to delete all existing data anymore
         # db.execute(text("DELETE FROM mabinogi_ranking"))
 
-        current_time_for_db = retrieved_at_kst if retrieved_at_kst else datetime.now(KST)
+        # Ensure KST timezone is used for timestamp
+        current_time_for_db = retrieved_at_kst if retrieved_at_kst else datetime.now(pytz.timezone('Asia/Seoul'))
         
         for item in data:
             # Convert comma-separated strings to numbers

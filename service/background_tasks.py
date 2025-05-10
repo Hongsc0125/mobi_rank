@@ -13,7 +13,8 @@ from service.db import engine, SessionLocal
 def get_outdated_characters():
     db = SessionLocal()
     try:
-        time_threshold = datetime.now() - timedelta(minutes=10)
+        from service.db import KST  # KST timezone 가져오기
+        time_threshold = datetime.now(KST) - timedelta(minutes=10)
         query = text("""
             SELECT server_name, character_name 
             FROM mabinogi_ranking
@@ -57,6 +58,8 @@ def update_character_data(server, character):
             if change_value == '-':
                 change_value = '0'
             
+            from service.db import KST  # KST timezone 가져오기
+            current_time_for_db = datetime.now(KST)
             query = text("""
                 UPDATE mabinogi_ranking
                 SET rank_position = :rank,
@@ -64,7 +67,7 @@ def update_character_data(server, character):
                     change_type = :change_type,
                     class_name = :class,
                     power_value = :power,
-                    retrieved_at = NOW()
+                    retrieved_at = :retrieved_at_val
                 WHERE server_name = :server AND character_name = :character
             """)
             
@@ -75,7 +78,8 @@ def update_character_data(server, character):
                 'server': server,
                 'character': character,
                 'class': character_data['class'],
-                'power': power_value
+                'power': power_value,
+                'retrieved_at_val': current_time_for_db
             })
             db.commit()
             #logger.info(f"Updated data for {character} on {server}")

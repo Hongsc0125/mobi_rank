@@ -48,10 +48,10 @@ def get_lowest_rank_char(server_num):
         try:
             # 해당 서버의 가장 낮은 랭킹(높은 숫자)을 가진 캐릭터 찾기
             query = text("""
-                SELECT r.character_name, r.ranking, r.retrieved_at
-                FROM mobi_rank r
-                WHERE r.server = :server
-                ORDER BY r.ranking DESC, r.retrieved_at DESC
+                SELECT character_name, rank_position, retrieved_at
+                FROM mabinogi_ranking
+                WHERE server_name = :server
+                ORDER BY rank_position DESC, retrieved_at DESC
                 LIMIT 1
             """)
             
@@ -86,6 +86,7 @@ def find_unexplored_ranges(server_num, max_page=None):
     try:
         from service.db import SessionLocal
         from sqlalchemy import text
+        import re
         
         # 최대 페이지 설정 (지정되지 않은 경우)
         if not max_page:
@@ -95,31 +96,46 @@ def find_unexplored_ranges(server_num, max_page=None):
             
             # 최소한 100페이지는 확인
             max_page = max(max_page + 50, 300)
-        
+            
         logger.info(f"서버 {server_num} 탐색 범위 추정: 1-{max_page} 페이지")
         
-        # 이미 10분 내에 탐색된 범위 찾기
-        recent_ranges = []
-        with discovered_ranges_lock:
-            if server_num in discovered_ranges:
-                for range_text, timestamp in discovered_ranges[server_num].items():
-                    if (datetime.now(KST) - timestamp) < timedelta(minutes=10):
-                        # "XXX위 ~ YYY위" 형식에서 페이지 범위 추출
-                        match = re.search(r'(\d+)위\s*~\s*(\d+)위', range_text)
-                        if match:
-                            start_rank = int(match.group(1).replace(',', ''))
-                            end_rank = int(match.group(2).replace(',', ''))
-                            # 페이지 번호로 변환 (1페이지 = 1-20위, 2페이지 = 21-40위, ...)
-                            start_page = (start_rank - 1) // 20 + 1
-                            end_page = (end_rank - 1) // 20 + 1
-                            
-                            # 같은 페이지인 경우 (대부분의 경우)
-                            if start_page == end_page:
-                                recent_ranges.append((start_page, start_page))
-                            # 여러 페이지에 걸친 경우 (거의 없음)
-                            else:
-                                recent_ranges.append((start_page, end_page))
-        
+        # 이미 10분 내에 탐색된 페이지 조회
+        session = SessionLocal()
+        try:
+            query = text("""
+                SELECT range_text FROM discovered_ranges
+                WHERE server_num = :server_num
+                AND last_crawled > :threshold
+            """)
+            
+            time_threshold = datetime.now(KST) - timedelta(minutes=10)
+            result = session.execute(query, {
+                'server_num': server_num,
+                'threshold': time_threshold
+            })
+            
+            recent_ranges = []
+            for row in result:
+                range_text = row[0]
+                # "XXX위 ~ YYY위" 형식에서 페이지 범위 추출
+                match = re.search(r'(\d+)위\s*~\s*(\d+)위', range_text)
+                if match:
+                    start_rank = int(match.group(1).replace(',', ''))
+                    end_rank = int(match.group(2).replace(',', ''))
+                    # 페이지 번호로 변환 (1페이지 = 1-20위, 2페이지 = 21-40위, ...)
+                    start_page = (start_rank - 1) // 20 + 1
+                    end_page = (end_rank - 1) // 20 + 1
+                    
+                    # 같은 페이지인 경우 (대부분의 경우)
+                    if start_page == end_page:
+                        recent_ranges.append((start_page, start_page))
+                    # 여러 페이지에 걸친 경우 (거의 없음)
+                    else:
+                        recent_ranges.append((start_page, end_page))
+                        
+        finally:
+            session.close()
+            
         # 탐색된 페이지 번호 집합
         explored_pages = set()
         for start, end in recent_ranges:
