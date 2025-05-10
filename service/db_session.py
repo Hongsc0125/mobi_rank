@@ -31,12 +31,20 @@ engine = create_engine(
 )
 
 # 세션 팩토리 생성
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+SessionLocal = sessionmaker(
+    autocommit=False, 
+    autoflush=False, 
+    bind=engine,
+    # 모든 datetime 값을 KST로 변환하는 타임존 설정
+    timezone=KST
+)
 
 def get_db():
     """DB 세션을 반환하는 함수"""
     db = SessionLocal()
     try:
+        # 세션의 타임존을 명시적으로 KST로 설정
+        db.execute('SET timezone TO "Asia/Seoul"')
         yield db
     except Exception as e:
         db.rollback()

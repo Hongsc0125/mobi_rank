@@ -11,8 +11,6 @@ def async_insert_data(data, server=None, character=None, retrieved_at_kst=None):
     """
     def _background_task():
         try:
-            # Pass retrieved_at_kst to insert_data. 
-            # If None, insert_data in db.py will generate its own KST timestamp.
             result = insert_data(data, server, character, retrieved_at_kst=retrieved_at_kst)
             # logger.info(f"Async DB update completed: {result.get('rows_affected')} rows affected")
         except Exception as e:

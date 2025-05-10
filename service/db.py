@@ -71,8 +71,7 @@ def has_recent_data(server, character=None, div=1):
         db.close()
 
 def insert_data(data, server=None, character=None, div=1, retrieved_at_kst=None): 
-    # First check if we already have recent data
-    # This call to has_recent_data will now use KST due to changes above
+    logger.info("retrieved_at_kst: ", retrieved_at_kst)
     recent_data = has_recent_data(server, character, div)
     if recent_data:
         #logger.info("Recent data found, skipping database update")
