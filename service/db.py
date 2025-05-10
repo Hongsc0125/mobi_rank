@@ -109,7 +109,7 @@ def insert_data(data, server=None, character=None, div=1, retrieved_at_kst=None)
             query = text("""
                 INSERT INTO mabinogi_ranking 
                 (rank_position, change_amount, change_type, server_name, character_name, class_name, power_value, div, retrieved_at)
-                VALUES (:rank, :change, :change_type, :server, :character, :class, :power, :div, :retrieved_at_val)
+                VALUES (:rank, :change, :change_type, :server, :character, :class, :power, :div, :retrieved_at_val AT TIME ZONE 'Asia/Seoul')
                 ON CONFLICT (character_name, server_name, div) 
                 DO UPDATE SET 
                     rank_position = :rank,
@@ -117,7 +117,7 @@ def insert_data(data, server=None, character=None, div=1, retrieved_at_kst=None)
                     change_type = :change_type,
                     class_name = :class,
                     power_value = :power,
-                    retrieved_at = :retrieved_at_val
+                    retrieved_at = :retrieved_at_val AT TIME ZONE 'Asia/Seoul'
             """)
             
             db.execute(query, {
