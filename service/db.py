@@ -4,6 +4,9 @@ import pytz
 from sqlalchemy import Text
 import logging
 
+# 로거 설정
+logger = logging.getLogger(__name__)
+
 # 중앙화된 DB 세션 관리 모듈 import
 from .db_session import SessionLocal, get_current_time, KST
 
