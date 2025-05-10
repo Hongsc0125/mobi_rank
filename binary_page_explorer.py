@@ -66,79 +66,166 @@ class PageRangeExplorer:
             heapq.heappush(self._pq, (ts, self._counter, low, high))
             self._counter += 1
 
-    # 상태 저장 및 로드 기능 추가
-    def save_state(self, filename=BINARY_RANGES_FILE):
-        """현재 탐색 상태를 파일에 저장"""
-        data = {
-            'server': self.server,
-            'ranges': {},
-            'counter': self._counter
-        }
-        
-        with self._lock:
-            # 시간 정보를 ISO 포맷으로 직렬화
-            for key, ts in self._ranges.items():
-                data['ranges'][f"{key[0]},{key[1]}"] = ts.isoformat()
-        
-        # 서버별로 폴더에 저장
-        os.makedirs(os.path.dirname(filename), exist_ok=True)
-        filepath = filename.replace('.json', f'_{self.server}.json')
-        with open(filepath, 'w', encoding='utf-8') as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-        
-        logger.info(f"서버 {self.server} 탐색 상태 저장: {len(self._ranges)}개 범위")
-
-    def load_state(self, filename=BINARY_RANGES_FILE):
-        """저장된 탐색 상태를 파일에서 로드"""
-        filepath = filename.replace('.json', f'_{self.server}.json')
-        if not os.path.exists(filepath):
-            logger.info(f"서버 {self.server} 저장된 탐색 상태 없음")
-            return False
-            
+    # DB 저장/로드 메서드로 변경
+    def save_state(self):
+        """현재 탐색 상태를 PostgreSQL DB에 저장"""
         try:
-            with open(filepath, 'r', encoding='utf-8') as f:
-                data = json.load(f)
+            # 세션 로컬 임포트
+            from service.db import SessionLocal
+            from sqlalchemy import text
             
-            if data['server'] != self.server:
-                logger.warning(f"서버 번호 불일치: {data['server']} != {self.server}")
-                return False
-                
-            with self._lock:
-                self._counter = data['counter']
-                self._pq = []
-                self._ranges = {}
-                
-                # 범위 및 시간 정보 복원
-                for key_str, ts_str in data['ranges'].items():
-                    low, high = map(int, key_str.split(','))
-                    ts = datetime.fromisoformat(ts_str)
-                    
-                    # KST 타임존 정보 추가
-                    if ts.tzinfo is None:
-                        ts = KST.localize(ts)
-                    
-                    key = (low, high)
-                    self._ranges[key] = ts
-                    heapq.heappush(self._pq, (ts, self._counter, low, high))
-                    self._counter += 1
-                    
-            logger.info(f"서버 {self.server} 탐색 상태 로드: {len(self._ranges)}개 범위")
-            return True
+            # 세션 생성
+            session = SessionLocal()
             
+            try:
+                # _ranges 딕셔너리 복사
+                with self._lock:
+                    ranges_to_save = list(self._ranges.items())
+                
+                # 각 범위를 DB에 저장 (PostgreSQL UPSERT 구문)
+                for key, ts in ranges_to_save:
+                    low, high = key
+                    ts_iso = ts.isoformat()
+                    
+                    query = text("""
+                        INSERT INTO binary_page_ranges 
+                            (server_num, low, high, last_crawled) 
+                        VALUES 
+                            (:server_num, :low, :high, :last_crawled)
+                        ON CONFLICT (server_num, low, high) 
+                        DO UPDATE SET 
+                            last_crawled = :last_crawled,
+                            timestamp = CURRENT_TIMESTAMP
+                    """)
+                    
+                    session.execute(query, {
+                        'server_num': self.server,
+                        'low': low,
+                        'high': high,
+                        'last_crawled': ts_iso
+                    })
+                
+                # 변경사항 커밋
+                session.commit()
+                logger.info(f"서버 {self.server} 탐색 상태 DB 저장: {len(ranges_to_save)}개 범위")
+                
+            except Exception as e:
+                session.rollback()
+                logger.error(f"서버 {self.server} 상태 DB 저장 중 오류: {e}")
+            finally:
+                session.close()
+                
         except Exception as e:
-            logger.error(f"상태 로드 오류 (서버 {self.server}): {e}")
+            logger.error(f"DB 연결 오류: {e}")
+
+    def load_state(self):
+        """저장된 탐색 상태를 PostgreSQL DB에서 로드"""
+        try:
+            # 세션 로컬 임포트
+            from service.db import SessionLocal
+            from sqlalchemy import text
+            
+            # 세션 생성
+            session = SessionLocal()
+            
+            try:
+                # 현재 서버의 범위 정보 쿼리 (PostgreSQL 호환)
+                query = text("""
+                    SELECT low, high, last_crawled 
+                    FROM binary_page_ranges 
+                    WHERE server_num = :server_num
+                """)
+                
+                result = session.execute(query, {'server_num': self.server})
+                
+                # 결과 처리를 위한 변수
+                loaded_ranges = {}
+                
+                # 결과 행 처리
+                for row in result:
+                    low = row[0]
+                    high = row[1]
+                    last_crawled = row[2]
+                    
+                    # 타임존 정보 적용
+                    if last_crawled.tzinfo is None:
+                        last_crawled = KST.localize(last_crawled)
+                    
+                    # 범위 정보 저장
+                    loaded_ranges[(low, high)] = last_crawled
+                
+                # 데이터가 있으면 상태 업데이트
+                if loaded_ranges:
+                    with self._lock:
+                        self._pq = []
+                        self._ranges = {}
+                        self._counter = 0
+                        
+                        # 각 범위를 우선순위 큐에 추가
+                        for key, ts in loaded_ranges.items():
+                            self._ranges[key] = ts
+                            heapq.heappush(self._pq, (ts, self._counter, key[0], key[1]))
+                            self._counter += 1
+                    
+                    logger.info(f"서버 {self.server} 탐색 상태 DB 로드: {len(loaded_ranges)}개 범위")
+                    return True
+                else:
+                    logger.info(f"서버 {self.server} DB에 저장된 탐색 상태 없음")
+                    return False
+                
+            finally:
+                session.close()
+                
+        except Exception as e:
+            logger.error(f"서버 {self.server} 상태 DB 로드 중 오류: {e}")
             return False
     
     def reset(self, min_page=1, max_page=50):
         """탐색 상태를 초기화하고 전체 범위(1,50) 다시 추가"""
-        with self._lock:
-            self._pq = []
-            self._ranges = {}
-            self._counter = 0
-            self.add_range(min_page, max_page)
-        
-        logger.info(f"서버 {self.server} 탐색 상태 초기화")
-        return True
+        try:
+            # 세션 로컬 임포트
+            from service.db import SessionLocal
+            from sqlalchemy import text
+            
+            # 세션 생성
+            session = SessionLocal()
+            
+            try:
+                # 현재 서버의 모든 범위 정보 삭제
+                query = text("""
+                    DELETE FROM binary_page_ranges 
+                    WHERE server_num = :server_num
+                """)
+                
+                session.execute(query, {'server_num': self.server})
+                session.commit()
+                
+                # 메모리 상태도 초기화
+                with self._lock:
+                    self._pq = []
+                    self._ranges = {}
+                    self._counter = 0
+                    self.add_range(min_page, max_page)
+                
+                logger.info(f"서버 {self.server} 탐색 상태 초기화")
+                return True
+                
+            except Exception as e:
+                session.rollback()
+                logger.error(f"서버 {self.server} 상태 초기화 중 오류: {e}")
+                return False
+            finally:
+                session.close()
+                
+        except Exception as e:
+            logger.error(f"DB 연결 오류: {e}")
+            # 메모리 상태는 초기화
+            with self._lock:
+                self._pq = []
+                self._ranges = {}
+                self._counter = 0
+                self.add_range(min_page, max_page)
+            return True
 
     def get_stats(self):
         """현재 탐색 상태 통계 반환"""

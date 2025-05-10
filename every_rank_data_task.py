@@ -39,8 +39,126 @@ discovered_ranges_lock = threading.Lock() # Added lock for discovered_ranges
 last_base_refresh = {}  # server_num -> timestamp
 range_queue = {}        # server_num -> deque of ranges to explore
 
-# File to persist discovered ranges between runs
-RANGES_FILE = os.path.join(os.path.dirname(__file__), "discovered_ranges.json")
+# DB 함수: discovered_ranges 테이블 쿼리
+def db_load_discovered_ranges():
+    """데이터베이스에서 발견된 범위 정보 로드"""
+    global discovered_ranges
+    newly_loaded_ranges = {}
+    
+    try:
+        # 세션 로컬 임포트 - 여기서 세션을 직접 생성하여 사용
+        from service.db import SessionLocal, engine
+        from sqlalchemy import text
+        
+        # 세션 생성
+        session = SessionLocal()
+        
+        try:
+            # 모든 서버의 범위 정보 쿼리
+            query = text("""
+                SELECT server_num, range_text, last_crawled 
+                FROM discovered_ranges
+            """)
+            
+            # 쿼리 실행
+            result = session.execute(query)
+            
+            # 결과 처리
+            for row in result:
+                server_num = row[0]
+                range_text = row[1]
+                last_crawled = row[2]
+                
+                # 서버 딕셔너리 초기화
+                if server_num not in newly_loaded_ranges:
+                    newly_loaded_ranges[server_num] = {}
+                
+                # KST 타임존 적용
+                if last_crawled.tzinfo is None:
+                    last_crawled = KST.localize(last_crawled)
+                
+                # 범위 정보 저장
+                newly_loaded_ranges[server_num][range_text] = last_crawled
+                
+            # 로드된 범위 개수 로깅
+            if newly_loaded_ranges:
+                count = sum(len(ranges) for ranges in newly_loaded_ranges.values())
+                logger.info(f"DB에서 {count}개 범위 로드 완료")
+                
+        finally:
+            session.close()
+        
+        # 전역 변수 업데이트
+        with discovered_ranges_lock:
+            if newly_loaded_ranges:
+                discovered_ranges = newly_loaded_ranges
+            else:
+                discovered_ranges = {i: {} for i in range(1, 8)}
+                
+    except Exception as e:
+        logger.error(f"DB에서 범위 로드 중 오류: {e}", exc_info=True)
+        with discovered_ranges_lock:
+            discovered_ranges = {i: {} for i in range(1, 8)}
+
+def db_save_discovered_ranges():
+    """발견된 범위 정보를 데이터베이스에 저장 (PostgreSQL)"""
+    try:
+        # 세션 로컬 임포트
+        from service.db import SessionLocal, engine
+        from sqlalchemy import text
+        
+        # 세션 생성
+        session = SessionLocal()
+        
+        try:
+            # 현재 discovered_ranges 복사본 생성
+            with discovered_ranges_lock:
+                ranges_to_save = {k: v.copy() for k, v in discovered_ranges.items()}
+            
+            # 각 범위 정보 저장
+            for server_num, ranges_dict in ranges_to_save.items():
+                for range_text, last_crawled in ranges_dict.items():
+                    # ISO 포맷으로 변환
+                    last_crawled_iso = last_crawled.isoformat()
+                    
+                    # PostgreSQL UPSERT 쿼리 실행
+                    query = text("""
+                        INSERT INTO discovered_ranges 
+                            (server_num, range_text, last_crawled) 
+                        VALUES 
+                            (:server_num, :range_text, :last_crawled)
+                        ON CONFLICT (server_num, range_text) 
+                        DO UPDATE SET 
+                            last_crawled = :last_crawled,
+                            timestamp = CURRENT_TIMESTAMP
+                    """)
+                    
+                    # 쿼리 실행
+                    session.execute(query, {
+                        'server_num': server_num,
+                        'range_text': range_text,
+                        'last_crawled': last_crawled_iso
+                    })
+            
+            # 변경사항 커밋
+            session.commit()
+            
+        except Exception as e:
+            session.rollback()
+            raise e
+        finally:
+            session.close()
+            
+    except Exception as e:
+        logger.error(f"DB에 범위 저장 중 오류: {e}", exc_info=True)
+
+def load_discovered_ranges():
+    """데이터베이스에서 발견된 범위 정보 로드"""
+    db_load_discovered_ranges()
+
+def save_discovered_ranges():
+    """발견된 범위 정보를 데이터베이스에 저장"""
+    db_save_discovered_ranges()
 
 # 전역 종료 이벤트 - 모든 스레드에게 종료 신호를 보내기 위한 플래그
 shutdown_event = threading.Event()
@@ -113,56 +231,6 @@ def signal_handler(sig, frame):
 # 시그널 핸들러 등록
 signal.signal(signal.SIGINT, signal_handler)   # Ctrl+C
 signal.signal(signal.SIGTERM, signal_handler)  # kill 명령어
-
-def load_discovered_ranges():
-    """이전에 발견된 범위를 파일에서 로드"""
-    global discovered_ranges
-    newly_loaded_ranges = {} 
-    try:
-        if os.path.exists(RANGES_FILE):
-            # File I/O outside the lock
-            with open(RANGES_FILE, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-            # Processing data outside the lock
-            for server_str, ranges_dict_val in data.items():
-                server_num = int(server_str)
-                newly_loaded_ranges[server_num] = {}
-                if isinstance(ranges_dict_val, dict): # Check if ranges_dict_val is a dict
-                    for range_text, timestamp_str in ranges_dict_val.items():
-                        dt_obj = datetime.fromisoformat(timestamp_str)
-                        if dt_obj.tzinfo is None or dt_obj.tzinfo.utcoffset(dt_obj) is None:
-                            newly_loaded_ranges[server_num][range_text] = KST.localize(dt_obj)
-                        else:
-                            newly_loaded_ranges[server_num][range_text] = dt_obj.astimezone(KST)
-            if newly_loaded_ranges: 
-                logger.info(f"파일에서 {sum(len(r) for r in newly_loaded_ranges.values() if isinstance(r, dict))}개 범위 로드 완료")
-        
-        with discovered_ranges_lock: # Lock only for assignment
-            if newly_loaded_ranges:
-                discovered_ranges = newly_loaded_ranges
-            else: 
-                discovered_ranges = {i: {} for i in range(1, 8)}
-            
-    except Exception as e:
-        logger.error(f"범위 로드 중 오류: {e}", exc_info=True)
-        with discovered_ranges_lock: 
-            discovered_ranges = {i: {} for i in range(1, 8)}
-
-def save_discovered_ranges():
-    """발견된 범위를 파일에 저장"""
-    data_to_save = {}
-    with discovered_ranges_lock: # Lock for reading
-        for server, ranges_dict_val in discovered_ranges.items():
-            if isinstance(ranges_dict_val, dict):
-                 data_to_save[str(server)] = {k: v.isoformat() for k, v in ranges_dict_val.items()}
-            else:
-                 data_to_save[str(server)] = {}
-    
-    try:    
-        with open(RANGES_FILE, 'w', encoding='utf-8') as f:
-            json.dump(data_to_save, f, ensure_ascii=False, indent=2)
-    except Exception as e:
-        logger.error(f"범위 저장 중 오류: {e}", exc_info=True)
 
 def is_range_recent(server_num, range_text):
     """범위가 최근(10분 이내)에 수집되었는지 확인"""
