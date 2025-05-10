@@ -1,4 +1,4 @@
-from sqlalchemy import create_engine, types, text
+from sqlalchemy import create_engine, types, text, event
 from sqlalchemy.orm import sessionmaker
 from datetime import datetime
 from pytz import timezone
@@ -34,10 +34,28 @@ engine = create_engine(
 SessionLocal = sessionmaker(
     autocommit=False, 
     autoflush=False, 
-    bind=engine,
-    # 모든 datetime 값을 KST로 변환하는 타임존 설정
-    timezone=KST
+    bind=engine
 )
+
+# 세션이 시작될 때 타임존 설정
+@event.listens_for(SessionLocal, 'after_begin')
+def set_timezone(session, transaction, connection):
+    connection.execute(text('SET TIME ZONE \'Asia/Seoul\''))
+
+def get_db():
+    """DB 세션을 반환하는 함수"""
+    db = SessionLocal()
+    try:
+        yield db
+    except Exception as e:
+        db.rollback()
+        raise
+    finally:
+        db.close()
+
+def get_current_time():
+    """현재 시간을 KST 타임존으로 반환하는 함수"""
+    return datetime.now(KST)
 
 def get_db():
     """DB 세션을 반환하는 함수"""
