@@ -2,6 +2,9 @@ from sqlalchemy import create_engine, types, text, event
 from sqlalchemy.orm import sessionmaker
 from datetime import datetime
 from pytz import timezone
+import logging
+
+logger = logging.getLogger(__name__)
 
 # 한국 표준시(KST) 타임존 설정
 KST = timezone('Asia/Seoul')
