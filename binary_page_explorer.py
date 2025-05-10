@@ -35,6 +35,125 @@ active_threads = []
 # 서버별 탐색기 인스턴스
 explorers = {}
 
+# DB에서 최하위 랭킹 캐릭터 및 미탐색 범위 탐색 기능 추가
+def get_lowest_rank_char(server_num):
+    """DB에서 특정 서버의 최하위 랭킹(가장 큰 수치) 캐릭터와 그 랭킹 가져오기"""
+    try:
+        from service.db import SessionLocal
+        from sqlalchemy import text
+        
+        session = SessionLocal()
+        server_name = get_server_name(server_num)
+        
+        try:
+            # 해당 서버의 가장 낮은 랭킹(높은 숫자)을 가진 캐릭터 찾기
+            query = text("""
+                SELECT r.character_name, r.ranking, r.retrieved_at
+                FROM mobi_rank r
+                WHERE r.server = :server
+                ORDER BY r.ranking DESC, r.retrieved_at DESC
+                LIMIT 1
+            """)
+            
+            result = session.execute(query, {'server': server_name})
+            row = result.fetchone()
+            
+            if row:
+                char_name, rank, timestamp = row
+                logger.info(f"서버 {server_num}({server_name})의 최하위 랭킹 캐릭터: {char_name}, 랭킹: {rank}")
+                return char_name, rank, timestamp
+            
+            return None, None, None
+            
+        finally:
+            session.close()
+            
+    except Exception as e:
+        logger.error(f"최하위 랭킹 조회 중 오류: {e}", exc_info=True)
+        return None, None, None
+
+def estimate_max_page(rank):
+    """랭킹값으로 대략적인 마지막 페이지 추정 (페이지당 20명)"""
+    if not rank:
+        return 100  # 기본값
+    
+    # 랭킹을 페이지 번호로 변환 (올림)
+    import math
+    return math.ceil(rank / 20)
+
+def find_unexplored_ranges(server_num, max_page=None):
+    """현재 서버에서 아직 탐색하지 않은 범위 찾기"""
+    try:
+        from service.db import SessionLocal
+        from sqlalchemy import text
+        
+        # 최대 페이지 설정 (지정되지 않은 경우)
+        if not max_page:
+            # 서버에서 확인된 최하위 랭킹으로 추정
+            _, lowest_rank, _ = get_lowest_rank_char(server_num)
+            max_page = estimate_max_page(lowest_rank) if lowest_rank else 300
+            
+            # 최소한 100페이지는 확인
+            max_page = max(max_page + 50, 300)
+        
+        logger.info(f"서버 {server_num} 탐색 범위 추정: 1-{max_page} 페이지")
+        
+        # 이미 10분 내에 탐색된 범위 찾기
+        recent_ranges = []
+        with discovered_ranges_lock:
+            if server_num in discovered_ranges:
+                for range_text, timestamp in discovered_ranges[server_num].items():
+                    if (datetime.now(KST) - timestamp) < timedelta(minutes=10):
+                        # "XXX위 ~ YYY위" 형식에서 페이지 범위 추출
+                        match = re.search(r'(\d+)위\s*~\s*(\d+)위', range_text)
+                        if match:
+                            start_rank = int(match.group(1).replace(',', ''))
+                            end_rank = int(match.group(2).replace(',', ''))
+                            # 페이지 번호로 변환 (1페이지 = 1-20위, 2페이지 = 21-40위, ...)
+                            start_page = (start_rank - 1) // 20 + 1
+                            end_page = (end_rank - 1) // 20 + 1
+                            
+                            # 같은 페이지인 경우 (대부분의 경우)
+                            if start_page == end_page:
+                                recent_ranges.append((start_page, start_page))
+                            # 여러 페이지에 걸친 경우 (거의 없음)
+                            else:
+                                recent_ranges.append((start_page, end_page))
+        
+        # 탐색된 페이지 번호 집합
+        explored_pages = set()
+        for start, end in recent_ranges:
+            for page in range(start, end + 1):
+                explored_pages.add(page)
+        
+        # 미탐색 범위 찾기
+        unexplored_ranges = []
+        start = None
+        
+        for page in range(1, max_page + 1):
+            if page not in explored_pages:
+                if start is None:
+                    start = page
+            elif start is not None:
+                unexplored_ranges.append((start, page - 1))
+                start = None
+        
+        # 마지막 범위 처리
+        if start is not None:
+            unexplored_ranges.append((start, max_page))
+        
+        # 미탐색 범위 로깅
+        if unexplored_ranges:
+            logger.info(f"서버 {server_num} 미탐색 범위: {unexplored_ranges}")
+        else:
+            logger.info(f"서버 {server_num} 모든 범위가 최근에 탐색됨")
+        
+        return unexplored_ranges, max_page
+        
+    except Exception as e:
+        logger.error(f"미탐색 범위 조회 중 오류: {e}", exc_info=True)
+        return [], 100  # 오류 시 기본값
+
 class PageRangeExplorer:
     """
     서버당 미탐색 페이지 범위를 이진 분할 방식으로 관리.
@@ -284,6 +403,21 @@ class PageRangeExplorer:
         if right_low < high:
             self.add_range(right_low, high)
 
+    def update_exploration_ranges(self, unexplored_ranges):
+        """미탐색 범위를 업데이트하여 큐 재초기화"""
+        with self._lock:
+            # 기존 큐 초기화
+            self._pq = []
+            self._ranges = {}
+            self._counter = 0
+            
+            # 미탐색 범위 추가
+            for low, high in unexplored_ranges:
+                self.add_range(low, high)
+            
+            logger.info(f"서버 {self.server} 탐색 범위 업데이트: {len(unexplored_ranges)}개 범위 추가")
+            return len(unexplored_ranges) > 0
+
 
 # 서버별 이진 탐색 워커 함수
 def binary_explore_worker(server_num, div=1):
@@ -325,34 +459,67 @@ def binary_explore_worker(server_num, div=1):
     
     # 마지막 범위 초기화 시간
     last_reset = datetime.now(KST)
-    # 재설정 간격 (1시간)
+    # 범위 재탐색 간격 (1시간)
     reset_interval = timedelta(hours=1)
+    # 범위 업데이트 간격 (15분)
+    update_interval = timedelta(minutes=15)
+    last_update = datetime.now(KST) - update_interval  # 시작 시 바로 업데이트하도록
     
     try:
         # 주 실행 루프
         while not shutdown_event.is_set():
-            # 주기적으로 전체 범위 초기화 (재탐색 보장)
             now = datetime.now(KST)
+            
+            # 주기적으로 미탐색 범위 업데이트 (15분마다)
+            if now - last_update > update_interval:
+                update_thread_status(thread_name, "범위 업데이트 중", f"서버 {server_num} 미탐색 범위 확인")
+                
+                # 최하위 랭킹 및 미탐색 범위 확인
+                unexplored_ranges, max_page = find_unexplored_ranges(server_num)
+                
+                if unexplored_ranges:
+                    # 기존 큐가 비어있거나 정기 업데이트 시간인 경우에만 전면 업데이트
+                    remaining_ranges = len(explorer._pq)
+                    if remaining_ranges == 0 or now - last_reset > reset_interval:
+                        explorer.update_exploration_ranges(unexplored_ranges)
+                        last_reset = now
+                        logger.info(f"서버 {server_num} 범위 전체 업데이트 완료")
+                    else:
+                        logger.info(f"서버 {server_num} 아직 처리할 범위가 {remaining_ranges}개 남아있어 업데이트 보류")
+                
+                last_update = now
+            
+            # 주기적으로 전체 범위 초기화 정기 실행 (1시간마다)
             if now - last_reset > reset_interval:
                 logger.info(f"서버 {server_num} 정기 초기화 수행 ({reset_interval})")
-                explorer.reset()
+                unexplored_ranges, _ = find_unexplored_ranges(server_num)
+                
+                if unexplored_ranges:
+                    explorer.update_exploration_ranges(unexplored_ranges)
+                else:
+                    # 미탐색 범위가 없으면 기본 1-300 범위로 재설정
+                    explorer.reset(1, 300)
+                
                 explorer.save_state()
                 last_reset = now
             
             # 다음 처리할 범위 가져오기
             range_tuple = explorer.get_next_range()
             if not range_tuple:
-                # 모든 범위 처리 완료 - 재초기화
-                logger.info(f"서버 {server_num} 모든 범위 처리 완료, 초기화 후 재시작")
-                explorer.reset()
-                # 상태 저장
-                explorer.save_state()
-                # 잠시 대기 후 다음 반복
-                for _ in range(6):
-                    if shutdown_event.is_set():
-                        break
-                    time.sleep(5)
-                continue
+                # 모든 범위 처리 완료 - 미탐색 범위 재확인
+                logger.info(f"서버 {server_num} 모든 범위 처리 완료, 미탐색 범위 재확인")
+                unexplored_ranges, _ = find_unexplored_ranges(server_num)
+                
+                if unexplored_ranges:
+                    explorer.update_exploration_ranges(unexplored_ranges)
+                else:
+                    # 남은 구간이 없으면 잠시 대기 후 재확인
+                    update_thread_status(thread_name, "대기 중", f"서버 {server_num} 범위 모두 처리됨")
+                    for _ in range(6):
+                        if shutdown_event.is_set():
+                            break
+                        time.sleep(5)
+                    continue
             
             # 범위 분해
             low, high = range_tuple
