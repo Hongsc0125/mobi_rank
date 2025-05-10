@@ -3,7 +3,8 @@ import logging
 from service.db import insert_data
 from service.db_session import KST, get_current_time
 
-# logger = logging.getLogger(__name__)
+# 로거 설정
+logger = logging.getLogger(__name__)
 
 def async_insert_data(data, server=None, character=None, retrieved_at_kst=None): # Added retrieved_at_kst
     """
@@ -12,9 +13,9 @@ def async_insert_data(data, server=None, character=None, retrieved_at_kst=None):
     def _background_task():
         try:
             result = insert_data(data, server, character, retrieved_at_kst=retrieved_at_kst)
-            # logger.info(f"Async DB update completed: {result.get('rows_affected')} rows affected")
+            logger.info(f"비동기 DB 업데이트 완료: {result.get('rows_affected')}행이 변경됨")
         except Exception as e:
-            # logger.error(f"Error in async DB update: {e}")
+            logger.error(f"비동기 DB 업데이트 오류: {e}")
             print(f"Error in async DB update: {e}")
     
     # 새 스레드를 생성하여 DB 작업 실행
