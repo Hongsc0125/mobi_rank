@@ -1,4 +1,4 @@
-from sqlalchemy import create_engine, types
+from sqlalchemy import create_engine, types, text
 from sqlalchemy.orm import sessionmaker
 from datetime import datetime
 from pytz import timezone
@@ -44,7 +44,7 @@ def get_db():
     db = SessionLocal()
     try:
         # 세션의 타임존을 명시적으로 KST로 설정
-        db.execute('SET timezone TO "Asia/Seoul"')
+        db.execute(text('SET TIME ZONE \'Asia/Seoul\''))
         yield db
     except Exception as e:
         db.rollback()
