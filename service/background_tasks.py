@@ -3,18 +3,16 @@ import time
 import logging
 import traceback
 from datetime import datetime, timedelta
-from sqlalchemy import text, create_engine
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy import text
 from service.full_data import fetch_rank_via_requests, parse_rank_html
-from service.db import engine, SessionLocal
+from service.db_session import SessionLocal, KST, get_current_time
 
 # #logger = logging.get#logger(__name__)
 
 def get_outdated_characters():
     db = SessionLocal()
     try:
-        from service.db import KST  # KST timezone 가져오기
-        time_threshold = datetime.now(KST) - timedelta(minutes=10)
+        time_threshold = get_current_time() - timedelta(minutes=10)
         query = text("""
             SELECT server_name, character_name 
             FROM mabinogi_ranking
@@ -58,8 +56,7 @@ def update_character_data(server, character):
             if change_value == '-':
                 change_value = '0'
             
-            from service.db import KST  # KST timezone 가져오기
-            current_time_for_db = datetime.now(KST)
+            current_time_for_db = get_current_time()
             query = text("""
                 UPDATE mabinogi_ranking
                 SET rank_position = :rank,

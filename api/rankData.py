@@ -2,13 +2,9 @@ from service.full_data import fetch_rank_via_requests, parse_rank_html
 from service.db import get_character_data, has_recent_data
 from service.async_db import async_insert_data
 import logging
-from datetime import datetime # Added import
-import pytz # Added import
+from service.db_session import KST, get_current_time
 
 logger = logging.getLogger(__name__)
-
-# Define KST timezone
-KST = pytz.timezone('Asia/Seoul') # Added KST timezone
 
 def rank_data(server=None, name=""):
     try:
@@ -49,7 +45,7 @@ def rank_data(server=None, name=""):
                 break
         
         # 비동기로 DB 업데이트 시작 (응답을 기다리지 않음)
-        now_kst = datetime.now(KST)
+        now_kst = get_current_time()
         async_insert_data(parsed_data, server, name, retrieved_at_kst=now_kst)
         
         if character_data:

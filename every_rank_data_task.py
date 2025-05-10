@@ -21,13 +21,10 @@ import psutil
 import gc
 import signal
 import sys
-import pytz # Added import
+from service.db_session import SessionLocal, KST, get_current_time, engine
 from selenium.common.exceptions import WebDriverException # Added import
 
 logger = logging.getLogger(__name__)
-
-# Define KST timezone
-KST = pytz.timezone('Asia/Seoul') # Added KST timezone
 
 # Track global discovered ranges to avoid duplicate work across runs
 all_discovered_ranges = {}  # server_num -> set of ranges
@@ -45,8 +42,6 @@ def db_load_discovered_ranges():
     newly_loaded_ranges = {}
     
     try:
-        # 세션 로컬 임포트 - 여기서 세션을 직접 생성하여 사용
-        from service.db import SessionLocal, engine
         from sqlalchemy import text
         
         # 세션 생성
@@ -101,7 +96,6 @@ def db_load_discovered_ranges():
 
 def db_save_discovered_ranges():
     """발견된 범위 정보를 데이터베이스에 저장 (PostgreSQL)"""
-    from service.db import SessionLocal, engine
     from sqlalchemy import text
     from sqlalchemy.exc import OperationalError
     import time
@@ -191,7 +185,7 @@ thread_status_lock = threading.Lock()
 def update_thread_status(thread_name, status, details=None):
     """스레드 상태 업데이트 및 로깅"""
     with thread_status_lock:
-        timestamp = datetime.now(KST).strftime("%H:%M:%S") # Use KST
+        timestamp = get_current_time().strftime("%H:%M:%S") # Use KST
         thread_status[thread_name] = {
             'status': status,
             'details': details,

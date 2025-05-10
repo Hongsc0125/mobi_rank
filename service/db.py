@@ -1,51 +1,11 @@
-from sqlalchemy import create_engine, text
-from sqlalchemy.orm import sessionmaker
-import logging
+from sqlalchemy import text
 from datetime import datetime, timedelta
-import pytz # Added import
-from sqlalchemy import types, Text
-from pytz import timezone
+import pytz
+from sqlalchemy import Text
+import logging
 
-KST = timezone('Asia/Seoul')
-
-class KSTDateTime(types.TypeDecorator):
-    impl = types.DateTime
-    cache_ok = True
-    
-    def process_bind_param(self, value, dialect):
-        if value is not None:
-            if not value.tzinfo:
-                raise ValueError("Timezone-aware datetime required")
-            return value.astimezone(KST)
-        return None
-
-    def process_result_value(self, value, dialect):
-        if value is not None:
-            return KST.localize(value)
-        return None
-
-
-# 데이터베이스 엔진 생성
-engine = create_engine(
-    "postgresql://super:Wkwkd119%21%21@207.180.212.248:5444/rank_data",
-    pool_pre_ping=True,  # 연결 유효성 검사
-    echo=False,  # SQL 쿼리 로깅 비활성화
-)
-
-# 세션 팩토리 생성
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-
-def get_db():
-    """DB 세션을 반환하는 함수"""
-    db = SessionLocal()
-    try:
-        yield db
-    except Exception as e:
-        #logger.error(f"Database error: {e}")
-        db.rollback()
-        raise
-    finally:
-        db.close()
+# 중앙화된 DB 세션 관리 모듈 import
+from service.db_session import SessionLocal, KST, get_current_time
 
 def has_recent_data(server, character=None, div=1):
     """
@@ -54,7 +14,7 @@ def has_recent_data(server, character=None, div=1):
     """
     db = SessionLocal()
     try:
-        time_threshold = datetime.now(KST) - timedelta(minutes=10) # Use KST
+        time_threshold = get_current_time() - timedelta(minutes=10) # Use KST
         
         # Build query based on whether we're looking for a specific character
         if character:
@@ -110,7 +70,7 @@ def has_recent_data(server, character=None, div=1):
     finally:
         db.close()
 
-def insert_data(data, server=None, character=None, div=1, retrieved_at_kst=None): # Added retrieved_at_kst
+def insert_data(data, server=None, character=None, div=1, retrieved_at_kst=None): 
     # First check if we already have recent data
     # This call to has_recent_data will now use KST due to changes above
     recent_data = has_recent_data(server, character, div)
@@ -125,7 +85,7 @@ def insert_data(data, server=None, character=None, div=1, retrieved_at_kst=None)
         # db.execute(text("DELETE FROM mabinogi_ranking"))
 
         # Ensure KST timezone is used for timestamp
-        current_time_for_db = retrieved_at_kst if retrieved_at_kst else datetime.now(pytz.timezone('Asia/Seoul'))
+        current_time_for_db = retrieved_at_kst if retrieved_at_kst else get_current_time()
         
         for item in data:
             # Convert comma-separated strings to numbers
@@ -201,7 +161,7 @@ def get_980_data(server_name):
     """Get characters beyond rank 980 for exploration"""
     db = SessionLocal()
     try:
-        time_threshold = datetime.now(KST) - timedelta(minutes=20) # Use KST
+        time_threshold = get_current_time() - timedelta(minutes=20) # Use KST
         query = text("""
             SELECT character_name FROM mabinogi_ranking
             WHERE server_name = :server_name 

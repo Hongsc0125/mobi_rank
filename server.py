@@ -7,7 +7,7 @@ from pydantic import BaseModel
 from api.rankData import rank_data
 import logging
 from service.background_tasks import start_background_tasks
-from service.db import engine
+from service.db_session import engine
 
 # Configure logging
 logging.basicConfig(

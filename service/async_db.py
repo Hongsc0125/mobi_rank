@@ -1,11 +1,7 @@
 import threading
 import logging
 from service.db import insert_data
-from datetime import datetime # Added import
-import pytz # Added import
-
-# Define KST timezone
-KST = pytz.timezone('Asia/Seoul') # Added KST timezone
+from service.db_session import KST, get_current_time
 
 # logger = logging.getLogger(__name__)
 
