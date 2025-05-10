@@ -43,7 +43,6 @@ SessionLocal = sessionmaker(
 # 세션이 시작될 때 타임존 설정
 @event.listens_for(SessionLocal, 'after_begin')
 def set_timezone(session, transaction, connection):
-    logger.info("Setting timezone to KST")
     connection.execute(text('SET TIME ZONE \'Asia/Seoul\''))
 
 def get_db():

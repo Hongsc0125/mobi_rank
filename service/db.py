@@ -5,7 +5,7 @@ from sqlalchemy import Text
 import logging
 
 # 중앙화된 DB 세션 관리 모듈 import
-from service.db_session import SessionLocal, KST, get_current_time
+from .db_session import SessionLocal, get_current_time, KST
 
 def has_recent_data(server, character=None, div=1):
     """
@@ -71,7 +71,7 @@ def has_recent_data(server, character=None, div=1):
         db.close()
 
 def insert_data(data, server=None, character=None, div=1, retrieved_at_kst=None): 
-    logger.info("retrieved_at_kst: ", retrieved_at_kst)
+    logger.info(f"retrieved_at_kst: {retrieved_at_kst}")
     recent_data = has_recent_data(server, character, div)
     if recent_data:
         #logger.info("Recent data found, skipping database update")
@@ -85,6 +85,12 @@ def insert_data(data, server=None, character=None, div=1, retrieved_at_kst=None)
 
         # Ensure KST timezone is used for timestamp
         current_time_for_db = retrieved_at_kst if retrieved_at_kst else get_current_time()
+        
+        # 타임존 확인 및 설정
+        if current_time_for_db and not current_time_for_db.tzinfo:
+            current_time_for_db = KST.localize(current_time_for_db)
+            
+        logger.info(f"사용할 타임스탬프: {current_time_for_db} (타입: {type(current_time_for_db)})")
         
         for item in data:
             # Convert comma-separated strings to numbers
