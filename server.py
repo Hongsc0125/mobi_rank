@@ -18,18 +18,19 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# IP Whitelist middleware
+# IP Whitelist middleware - 임시로 모든 IP 허용 (테스트용)
 class IPWhitelistMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         client_ip = request.client.host
         request_path = request.url.path
         
-        # 이미지 경로인지 확인 (정확한 경로 패턴 처리)
+        # 모든 경로 로깅 (테스트용)
         if request_path.startswith("/images"):
-            logger.info(f"[트래픽] 이미지 액세스 허용: {request_path} (IP: {client_ip})")
-            return await call_next(request)
+            logger.info(f"[트래픽] 이미지 액세스: {request_path} (IP: {client_ip})")
+        else:
+            logger.info(f"[트래픽] 일반 액세스: {request_path} (IP: {client_ip})")
         
-        # IP 화이트리스트 정의
+        # 원래 화이트리스트 - 참조용으로 보존 (현재 사용하지 않음)
         whitelist = [
             "207.180.212.248", 
             "127.0.0.1", 
@@ -39,15 +40,15 @@ class IPWhitelistMiddleware(BaseHTTPMiddleware):
             "218.233.5.245"
         ]
         
-        # IP 화이트리스트 검사
-        if client_ip not in whitelist:
-            logger.warning(f"[접근 거부] 미승인 IP: {client_ip}, 경로: {request_path}")
-            return JSONResponse(
-                status_code=403,
-                content={"message": "접근이 거부되었습니다. 허용된 IP가 아닙니다."}
-            )
+        # 테스트를 위해 모든 IP 허용 - 테스트 후 주석 처리하고 위 코드를 다시 활성화해야 함
+        # if client_ip not in whitelist:
+        #     logger.warning(f"[접근 거부] 미승인 IP: {client_ip}, 경로: {request_path}")
+        #     return JSONResponse(
+        #         status_code=403,
+        #         content={"message": "접근이 거부되었습니다. 허용된 IP가 아닙니다."}
+        #     )
         
-        logger.info(f"[트래픽] 일반 액세스 허용: {request_path} (IP: {client_ip})")
+        # 모든 요청 허용 (테스트용)
         return await call_next(request)
 
 # 메인 애플리케이션 생성
