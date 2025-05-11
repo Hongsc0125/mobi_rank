@@ -21,6 +21,11 @@ logger = logging.getLogger(__name__)
 # IP Whitelist middleware
 class IPWhitelistMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
+        # 이미지 경로는 모든 IP 허용
+        if request.url.path.startswith("/images"):
+            return await call_next(request)
+        
+        # 다른 모든 경로는 IP 화이트리스트 검사
         # Get client's IP address
         client_ip = request.client.host
         
@@ -39,7 +44,7 @@ class IPWhitelistMiddleware(BaseHTTPMiddleware):
             logger.warning(f"Blocked request from unauthorized IP: {client_ip}")
             return JSONResponse(
                 status_code=403,
-                content={"message": "Access denied. Your IP is not whitelisted."}
+                content={"message": "접근이 거부되었습니다. 허용된 IP가 아닙니다."}
             )
             
         # If IP is whitelisted, proceed with the request
