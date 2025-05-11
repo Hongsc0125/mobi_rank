@@ -149,22 +149,33 @@ def generate_population_graph(population_data):
         # 그래프 크기 설정 (가로 480px)
         plt.figure(figsize=(4.8, 3.2))
         
+        # 숫자 포맷팅 함수 정의 (K, M 단위 표시)
+        def format_number(x, pos):
+            if x >= 1000000:
+                return f'{x/1000000:.1f}M'  # 백만 단위는 M으로 표시
+            elif x >= 1000:
+                return f'{x/1000:.0f}K'     # 천 단위는 K로 표시
+            else:
+                return f'{x:.0f}'
+        
         # 바 차트 생성
         bars = plt.bar(servers, populations, color='skyblue')
         
-        # 바 위에 숫자 표시
+        # 바 위에 숫자 표시 (포맷팅 적용)
         for bar, population in zip(bars, populations):
             plt.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 50,
                      f'{population:,}',
                      ha='center', va='bottom', fontsize=10)
         
         # 그래프 타이틀 및 레이블 설정
-        current_time = get_current_time().strftime('%Y-%m-%d %H:%M:%S')
-        plt.title(f'마비노기 서버별 인구수 ({current_time} KST)', fontsize=16)
-        plt.xlabel('서버', fontsize=14)
-        plt.ylabel('인구수', fontsize=14)
+        plt.xlabel('서버', fontsize=12)
+        plt.ylabel('인구수', fontsize=12)
         plt.xticks(rotation=45)
         plt.ylim(0, max(populations) * 1.2)  # y축 범위 설정
+        
+        # y축 포맷터 설정
+        from matplotlib.ticker import FuncFormatter
+        plt.gca().yaxis.set_major_formatter(FuncFormatter(format_number))
         
         plt.tight_layout()
         
