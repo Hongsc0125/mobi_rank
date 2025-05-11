@@ -146,8 +146,8 @@ def generate_population_graph(population_data):
         servers = [item['server_name'] for item in population_data]
         populations = [item['population'] for item in population_data]
         
-        # 그래프 크기 설정
-        plt.figure(figsize=(12, 8))
+        # 그래프 크기 설정 (가로 480px)
+        plt.figure(figsize=(4.8, 3.2))
         
         # 바 차트 생성
         bars = plt.bar(servers, populations, color='skyblue')
