@@ -50,15 +50,19 @@ class IPWhitelistMiddleware(BaseHTTPMiddleware):
         # If IP is whitelisted, proceed with the request
         return await call_next(request)
 
+# 메인 애플리케이션 생성
 app = FastAPI(title="MabiRank API")
 
-# Add the IP whitelist middleware
-app.add_middleware(IPWhitelistMiddleware)
-
-# Mount static files directory for images
+# 이미지용 별도 앱 생성 (미들웨어 없음)
+static_app = FastAPI()
 static_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "images")
 os.makedirs(static_dir, exist_ok=True)
+
+# 메인 앱에 이미지 앱 마운트
 app.mount("/images", StaticFiles(directory=static_dir), name="images")
+
+# 미들웨어는 이미지 마운트 후에 추가 (이미지 경로에는 영향 없음)
+app.add_middleware(IPWhitelistMiddleware)
 
 class SearchReq(BaseModel):
     server: str
