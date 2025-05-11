@@ -57,25 +57,12 @@ app = FastAPI(title="MabiRank API")
 static_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "images")
 os.makedirs(static_dir, exist_ok=True)
 
-# 이미지용 욕시 이미지 디렉토리만 인스턴스화
-# 이 인스턴스는 미들웨어를 적용하지 않는 완전히 별도의 액세스 포인트
-image_app = FastAPI()
-image_app.mount("/", StaticFiles(directory=static_dir), name="images")
+# 이미지 음성파일 등의 정적 파일을 위한 StaticFiles 마운트
+# 이것은 IP 화이트리스트 미들웨어를 적용하기 전에 먼저 마운트해야 불필요한 검사를 피할 수 있음
+app.mount("/images", StaticFiles(directory=static_dir), name="images")
 
-# 메인 앱에 IP 화이트리스트 미들웨어 추가
+# 이미지 디렉토리를 제외한 나머지 경로에만 IP 화이트리스트 미들웨어 추가
 app.add_middleware(IPWhitelistMiddleware)
-
-# 이미지 액세스를 위한 별도 라우트 설정 - 메인 앱과는 별도
-@app.get("/images/{path:path}", include_in_schema=False)
-async def serve_images(path: str):
-    # 여기서는 어떤 IP 체크도 하지 않음
-    file_path = os.path.join(static_dir, path)
-    if os.path.exists(file_path) and os.path.isfile(file_path):
-        return FileResponse(file_path)
-    return JSONResponse(status_code=404, content={"message": "파일을 찾을 수 없습니다."})
-
-# 원래 마운트는 사용하지 않음 - 가능하면 주석 처리 부탁
-# app.mount("/images", StaticFiles(directory=static_dir), name="images")
 
 class SearchReq(BaseModel):
     server: str
