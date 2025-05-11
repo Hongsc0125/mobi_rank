@@ -1,7 +1,7 @@
 # api_server.py
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import JSONResponse, FileResponse
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import BaseHTTPMiddleware
 from pydantic import BaseModel
@@ -18,19 +18,13 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# IP Whitelist middleware - 임시로 모든 IP 허용 (테스트용)
+# IP Whitelist middleware
 class IPWhitelistMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
+        # Get client's IP address
         client_ip = request.client.host
-        request_path = request.url.path
         
-        # 모든 경로 로깅 (테스트용)
-        if request_path.startswith("/images"):
-            logger.info(f"[트래픽] 이미지 액세스: {request_path} (IP: {client_ip})")
-        else:
-            logger.info(f"[트래픽] 일반 액세스: {request_path} (IP: {client_ip})")
-        
-        # 원래 화이트리스트 - 참조용으로 보존 (현재 사용하지 않음)
+        # Define whitelist
         whitelist = [
             "207.180.212.248", 
             "127.0.0.1", 
@@ -40,30 +34,26 @@ class IPWhitelistMiddleware(BaseHTTPMiddleware):
             "218.233.5.245"
         ]
         
-        # 테스트를 위해 모든 IP 허용 - 테스트 후 주석 처리하고 위 코드를 다시 활성화해야 함
-        # if client_ip not in whitelist:
-        #     logger.warning(f"[접근 거부] 미승인 IP: {client_ip}, 경로: {request_path}")
-        #     return JSONResponse(
-        #         status_code=403,
-        #         content={"message": "접근이 거부되었습니다. 허용된 IP가 아닙니다."}
-        #     )
-        
-        # 모든 요청 허용 (테스트용)
+        # Check if client IP is in whitelist
+        if client_ip not in whitelist:
+            logger.warning(f"Blocked request from unauthorized IP: {client_ip}")
+            return JSONResponse(
+                status_code=403,
+                content={"message": "Access denied. Your IP is not whitelisted."}
+            )
+            
+        # If IP is whitelisted, proceed with the request
         return await call_next(request)
 
-# 메인 애플리케이션 생성
 app = FastAPI(title="MabiRank API")
 
-# 이미지 디렉토리 설정
+# Add the IP whitelist middleware
+app.add_middleware(IPWhitelistMiddleware)
+
+# Mount static files directory for images
 static_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "images")
 os.makedirs(static_dir, exist_ok=True)
-
-# 이미지 음성파일 등의 정적 파일을 위한 StaticFiles 마운트
-# 이것은 IP 화이트리스트 미들웨어를 적용하기 전에 먼저 마운트해야 불필요한 검사를 피할 수 있음
 app.mount("/images", StaticFiles(directory=static_dir), name="images")
-
-# 이미지 디렉토리를 제외한 나머지 경로에만 IP 화이트리스트 미들웨어 추가
-app.add_middleware(IPWhitelistMiddleware)
 
 class SearchReq(BaseModel):
     server: str
