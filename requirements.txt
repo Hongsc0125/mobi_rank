@@ -11,3 +11,4 @@ sqlalchemy
 psycopg2-binary
 psutil>=5.9.0
 pytz
+matplotlib

@@ -2,12 +2,14 @@
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import BaseHTTPMiddleware
 from pydantic import BaseModel
 from api.rankData import rank_data
 import logging
 from service.background_tasks import start_background_tasks
 from service.db_session import engine
+import os
 
 # Configure logging
 logging.basicConfig(
@@ -48,6 +50,11 @@ app = FastAPI(title="MabiRank API")
 # Add the IP whitelist middleware
 app.add_middleware(IPWhitelistMiddleware)
 
+# Mount static files directory for images
+static_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "images")
+os.makedirs(static_dir, exist_ok=True)
+app.mount("/images", StaticFiles(directory=static_dir), name="images")
+
 class SearchReq(BaseModel):
     server: str
     character: str
@@ -85,6 +92,17 @@ def api_search(req: SearchReq):
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail="서버 에러: "+str(e))
+
+# Population data endpoint
+@app.get("/population", summary="서버별 인구수 조회")
+def get_population():
+    try:
+        from service.population import get_population_data
+        result = get_population_data()
+        return result
+    except Exception as e:
+        logger.error(f"Population endpoint error: {e}")
+        raise HTTPException(status_code=500, detail=f"서버 에러: {str(e)}")
 
 # Start background tasks when the server starts
 @app.on_event("startup")

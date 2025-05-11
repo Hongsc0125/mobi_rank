@@ -1,0 +1,221 @@
+import concurrent.futures
+import matplotlib.pyplot as plt
+import numpy as np
+import os
+import logging
+from datetime import datetime
+import pytz
+from sqlalchemy import text
+from service.db_session import SessionLocal, get_current_time, KST
+from service.full_data import fetch_rank_via_requests, parse_rank_html
+
+# 로거 설정
+logger = logging.getLogger(__name__)
+
+def get_last_characters():
+    """
+    각 서버별 가장 하위 랭킹 캐릭터를 조회합니다.
+    
+    Returns:
+        list: 각 서버별 최하위 캐릭터 정보 리스트
+    """
+    db = SessionLocal()
+    try:
+        # 각 서버별 최대 랭킹 포지션을 가진 캐릭터 조회
+        query = text("""
+            SELECT
+              mr.*
+            FROM
+              mabinogi_ranking mr
+            INNER JOIN (
+              SELECT
+                server_name,
+                MAX(rank_position) AS max_rank_position
+              FROM
+                mabinogi_ranking
+              GROUP BY
+                server_name
+            ) AS max_ranks
+              ON mr.server_name = max_ranks.server_name
+              AND mr.rank_position = max_ranks.max_rank_position
+            ORDER BY
+              mr.server_name
+        """)
+        
+        results = db.execute(query).fetchall()
+        
+        # 결과를 딕셔너리 리스트로 변환
+        columns = ['id', 'rank_position', 'change_amount', 'change_type', 
+                  'server_name', 'character_name', 'class_name', 'power_value', 'retrieved_at', 'div']
+        return [{columns[i]: value for i, value in enumerate(row)} for row in results]
+    except Exception as e:
+        logger.error(f"서버별 최하위 캐릭터 조회 중 오류 발생: {e}")
+        return []
+    finally:
+        db.close()
+
+def find_server_population(server_name, last_character):
+    """
+    주어진 서버에서 마지막 캐릭터보다 더 낮은 랭킹의 캐릭터를 찾아 실제 인구수를 확인합니다.
+    
+    Args:
+        server_name (str): 서버 이름
+        last_character (dict): 최하위 캐릭터 정보
+        
+    Returns:
+        int: 서버의 추정 인구수
+    """
+    try:
+        # 현재 저장된 최하위 캐릭터의 랭킹
+        last_rank = last_character['rank_position']
+        character_name = last_character['character_name']
+        
+        # 마지막 캐릭터 정보 가져오기
+        html_data = fetch_rank_via_requests(server_name, character_name)
+        parsed_data = parse_rank_html(html_data)
+        
+        # 파싱된 데이터에서 현재 캐릭터의 랭킹 확인
+        current_rank = last_rank
+        for item in parsed_data:
+            if item['character'] == character_name:
+                current_rank = int(item['rank'].replace(',', '').replace('위', ''))
+                break
+        
+        # 현재 랭킹이 마지막 저장된 랭킹보다 높으면 더 크롤링 필요 없음
+        if current_rank < last_rank:
+            return current_rank
+            
+        return last_rank
+    except Exception as e:
+        logger.error(f"{server_name} 서버 인구수 확인 중 오류 발생: {e}")
+        return last_rank  # 오류 발생 시 기존 랭킹 반환
+
+def get_all_server_populations():
+    """
+    모든 서버의 인구수를 멀티스레드로 확인합니다.
+    
+    Returns:
+        list: 서버별 인구수 정보 리스트
+    """
+    # 각 서버별 최하위 캐릭터 정보 가져오기
+    last_characters = get_last_characters()
+    
+    if not last_characters:
+        return []
+    
+    # 서버별 인구수 확인 작업 멀티스레드로 실행
+    results = []
+    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+        future_to_server = {
+            executor.submit(find_server_population, char['server_name'], char): char['server_name']
+            for char in last_characters
+        }
+        
+        for future in concurrent.futures.as_completed(future_to_server):
+            server_name = future_to_server[future]
+            try:
+                population = future.result()
+                results.append({
+                    "server_name": server_name, 
+                    "population": population
+                })
+                logger.info(f"{server_name} 서버 인구수: {population}")
+            except Exception as e:
+                logger.error(f"{server_name} 서버 인구수 확인 결과 처리 중 오류: {e}")
+    
+    # 서버 이름 순으로 정렬
+    results.sort(key=lambda x: x["server_name"])
+    return results
+
+def generate_population_graph(population_data):
+    """
+    인구수 데이터를 기반으로 그래프 이미지를 생성합니다.
+    
+    Args:
+        population_data (list): 서버별 인구수 정보 리스트
+        
+    Returns:
+        str: 생성된 이미지 파일 경로
+    """
+    try:
+        # 한글 폰트 설정
+        plt.rcParams['font.family'] = 'Malgun Gothic'
+        plt.rcParams['axes.unicode_minus'] = False
+        
+        # 데이터 준비
+        servers = [item['server_name'] for item in population_data]
+        populations = [item['population'] for item in population_data]
+        
+        # 그래프 크기 설정
+        plt.figure(figsize=(12, 8))
+        
+        # 바 차트 생성
+        bars = plt.bar(servers, populations, color='skyblue')
+        
+        # 바 위에 숫자 표시
+        for bar, population in zip(bars, populations):
+            plt.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 50,
+                     f'{population:,}',
+                     ha='center', va='bottom', fontsize=10)
+        
+        # 그래프 타이틀 및 레이블 설정
+        current_time = get_current_time().strftime('%Y-%m-%d %H:%M:%S')
+        plt.title(f'마비노기 서버별 인구수 ({current_time} KST)', fontsize=16)
+        plt.xlabel('서버', fontsize=14)
+        plt.ylabel('인구수', fontsize=14)
+        plt.xticks(rotation=45)
+        plt.ylim(0, max(populations) * 1.2)  # y축 범위 설정
+        
+        plt.tight_layout()
+        
+        # 이미지 저장
+        image_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "images")
+        os.makedirs(image_dir, exist_ok=True)
+        
+        # 파일명에 현재 시간 포함
+        timestamp = datetime.now(KST).strftime("%Y%m%d%H%M%S")
+        filename = f"population_graph_{timestamp}.png"
+        filepath = os.path.join(image_dir, filename)
+        
+        plt.savefig(filepath, dpi=100)
+        plt.close()
+        
+        return filename
+    except Exception as e:
+        logger.error(f"인구수 그래프 생성 중 오류 발생: {e}")
+        return None
+
+def get_population_data():
+    """
+    인구수 데이터와 그래프 이미지를 생성하고 반환합니다.
+    
+    Returns:
+        dict: 인구수 데이터와 그래프 이미지 URL
+    """
+    try:
+        # 서버별 인구수 조회
+        population_data = get_all_server_populations()
+        
+        if not population_data:
+            return {"success": False, "message": "인구수 데이터를 조회할 수 없습니다."}
+        
+        # 그래프 이미지 생성
+        image_filename = generate_population_graph(population_data)
+        
+        if not image_filename:
+            return {
+                "success": True,
+                "data": population_data,
+                "message": "그래프 이미지 생성에 실패했습니다."
+            }
+        
+        # 결과 반환
+        return {
+            "success": True,
+            "data": population_data,
+            "imageUrl": f"/images/{image_filename}",
+            "timestamp": get_current_time().strftime('%Y-%m-%d %H:%M:%S KST')
+        }
+    except Exception as e:
+        logger.error(f"인구수 데이터 처리 중 오류 발생: {e}")
+        return {"success": False, "message": f"오류 발생: {str(e)}"}
