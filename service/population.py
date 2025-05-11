@@ -3,7 +3,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import os
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 import pytz
 from sqlalchemy import text
 from service.db_session import SessionLocal, get_current_time, KST
@@ -185,13 +185,42 @@ def generate_population_graph(population_data):
         logger.error(f"인구수 그래프 생성 중 오류 발생: {e}")
         return None
 
+# 캐싱을 위한 변수들
+_population_cache = {
+    "data": None,
+    "timestamp": None,
+    "imageUrl": None,
+    "cache_time": None
+}
+
 def get_population_data():
     """
     인구수 데이터와 그래프 이미지를 생성하고 반환합니다.
+    30분 이내 이전 요청이 있었다면 캐싱된 결과를 반환합니다.
     
     Returns:
         dict: 인구수 데이터와 그래프 이미지 URL
     """
+    global _population_cache
+    
+    current_time = get_current_time()
+    
+    # 캐시가 있고 30분이 지나지 않았으면 캐시된 결과 반환
+    if (_population_cache["cache_time"] and 
+        current_time - _population_cache["cache_time"] < timedelta(minutes=30) and
+        _population_cache["data"]):
+        
+        logger.info(f"캐시된 인구수 데이터 반환 (캐시 시간: {_population_cache['cache_time'].strftime('%Y-%m-%d %H:%M:%S KST')})")
+        
+        return {
+            "success": True,
+            "data": _population_cache["data"],
+            "imageUrl": _population_cache["imageUrl"],
+            "timestamp": _population_cache["timestamp"],
+            "from_cache": True,
+            "cache_time": _population_cache["cache_time"].strftime('%Y-%m-%d %H:%M:%S KST')
+        }
+    
     try:
         # 서버별 인구수 조회
         population_data = get_all_server_populations()
@@ -209,12 +238,23 @@ def get_population_data():
                 "message": "그래프 이미지 생성에 실패했습니다."
             }
         
+        # 현재 시간을 KST로 포맷팅
+        timestamp = current_time.strftime('%Y-%m-%d %H:%M:%S KST')
+        image_url = f"/images/{image_filename}"
+        
+        # 캐시 업데이트
+        _population_cache["data"] = population_data
+        _population_cache["timestamp"] = timestamp
+        _population_cache["imageUrl"] = image_url
+        _population_cache["cache_time"] = current_time
+        
         # 결과 반환
         return {
             "success": True,
             "data": population_data,
-            "imageUrl": f"/images/{image_filename}",
-            "timestamp": get_current_time().strftime('%Y-%m-%d %H:%M:%S KST')
+            "imageUrl": image_url,
+            "timestamp": timestamp,
+            "from_cache": False
         }
     except Exception as e:
         logger.error(f"인구수 데이터 처리 중 오류 발생: {e}")
