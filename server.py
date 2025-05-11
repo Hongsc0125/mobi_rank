@@ -1,7 +1,7 @@
 # api_server.py
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import BaseHTTPMiddleware
 from pydantic import BaseModel
@@ -21,15 +21,15 @@ logger = logging.getLogger(__name__)
 # IP Whitelist middleware
 class IPWhitelistMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
-        # 이미지 경로는 모든 IP 허용
-        if request.url.path.startswith("/images"):
+        client_ip = request.client.host
+        request_path = request.url.path
+        
+        # 이미지 경로인지 확인 (정확한 경로 패턴 처리)
+        if request_path.startswith("/images"):
+            logger.info(f"[트래픽] 이미지 액세스 허용: {request_path} (IP: {client_ip})")
             return await call_next(request)
         
-        # 다른 모든 경로는 IP 화이트리스트 검사
-        # Get client's IP address
-        client_ip = request.client.host
-        
-        # Define whitelist
+        # IP 화이트리스트 정의
         whitelist = [
             "207.180.212.248", 
             "127.0.0.1", 
@@ -39,30 +39,43 @@ class IPWhitelistMiddleware(BaseHTTPMiddleware):
             "218.233.5.245"
         ]
         
-        # Check if client IP is in whitelist
+        # IP 화이트리스트 검사
         if client_ip not in whitelist:
-            logger.warning(f"Blocked request from unauthorized IP: {client_ip}")
+            logger.warning(f"[접근 거부] 미승인 IP: {client_ip}, 경로: {request_path}")
             return JSONResponse(
                 status_code=403,
                 content={"message": "접근이 거부되었습니다. 허용된 IP가 아닙니다."}
             )
-            
-        # If IP is whitelisted, proceed with the request
+        
+        logger.info(f"[트래픽] 일반 액세스 허용: {request_path} (IP: {client_ip})")
         return await call_next(request)
 
 # 메인 애플리케이션 생성
 app = FastAPI(title="MabiRank API")
 
-# 이미지용 별도 앱 생성 (미들웨어 없음)
-static_app = FastAPI()
+# 이미지 디렉토리 설정
 static_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "images")
 os.makedirs(static_dir, exist_ok=True)
 
-# 메인 앱에 이미지 앱 마운트
-app.mount("/images", StaticFiles(directory=static_dir), name="images")
+# 이미지용 욕시 이미지 디렉토리만 인스턴스화
+# 이 인스턴스는 미들웨어를 적용하지 않는 완전히 별도의 액세스 포인트
+image_app = FastAPI()
+image_app.mount("/", StaticFiles(directory=static_dir), name="images")
 
-# 미들웨어는 이미지 마운트 후에 추가 (이미지 경로에는 영향 없음)
+# 메인 앱에 IP 화이트리스트 미들웨어 추가
 app.add_middleware(IPWhitelistMiddleware)
+
+# 이미지 액세스를 위한 별도 라우트 설정 - 메인 앱과는 별도
+@app.get("/images/{path:path}", include_in_schema=False)
+async def serve_images(path: str):
+    # 여기서는 어떤 IP 체크도 하지 않음
+    file_path = os.path.join(static_dir, path)
+    if os.path.exists(file_path) and os.path.isfile(file_path):
+        return FileResponse(file_path)
+    return JSONResponse(status_code=404, content={"message": "파일을 찾을 수 없습니다."})
+
+# 원래 마운트는 사용하지 않음 - 가능하면 주석 처리 부탁
+# app.mount("/images", StaticFiles(directory=static_dir), name="images")
 
 class SearchReq(BaseModel):
     server: str
