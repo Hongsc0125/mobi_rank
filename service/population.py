@@ -201,13 +201,14 @@ _population_cache = {
     "data": None,
     "timestamp": None,
     "imageUrl": None,
-    "cache_time": None
+    "cache_time": None,
+    "last_updated": None
 }
 
 def get_population_data():
     """
-    인구수 데이터와 그래프 이미지를 생성하고 반환합니다.
-    30분 이내 이전 요청이 있었다면 캐싱된 결과를 반환합니다.
+    인구수 데이터와 그래프 이미지를 반환합니다.
+    1시간마다 백그라운드에서 자동으로 갱신되며, 요청시 최신 데이터를 반환합니다.
     
     Returns:
         dict: 인구수 데이터와 그래프 이미지 URL
@@ -216,20 +217,17 @@ def get_population_data():
     
     current_time = get_current_time()
     
-    # 캐시가 있고 30분이 지나지 않았으면 캐시된 결과 반환
-    if (_population_cache["cache_time"] and 
-        current_time - _population_cache["cache_time"] < timedelta(minutes=30) and
-        _population_cache["data"]):
+    # 캐시된 데이터가 있으면 반환 
+    if _population_cache["data"]:
         
-        logger.info(f"캐시된 인구수 데이터 반환 (캐시 시간: {_population_cache['cache_time'].strftime('%Y-%m-%d %H:%M:%S KST')})")
-        
+        logger.info(f"캐시된 인구수 데이터 반환 (마지막 업데이트: {_population_cache['last_updated'].strftime('%Y-%m-%d %H:%M:%S KST')})")        
         return {
             "success": True,
             "data": _population_cache["data"],
             "imageUrl": _population_cache["imageUrl"],
             "timestamp": _population_cache["timestamp"],
             "from_cache": True,
-            "cache_time": _population_cache["cache_time"].strftime('%Y-%m-%d %H:%M:%S KST')
+            "last_updated": _population_cache["last_updated"].strftime('%Y-%m-%d %H:%M:%S KST')
         }
     
     try:
@@ -258,6 +256,7 @@ def get_population_data():
         _population_cache["timestamp"] = timestamp
         _population_cache["imageUrl"] = image_url
         _population_cache["cache_time"] = current_time
+        _population_cache["last_updated"] = current_time
         
         # 결과 반환
         return {

@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 from sqlalchemy import text
 from service.full_data import fetch_rank_via_requests, parse_rank_html
 from service.db_session import SessionLocal, KST, get_current_time
+from service.population import get_all_server_populations, generate_population_graph
 
 # #logger = logging.get#logger(__name__)
 
@@ -115,12 +116,54 @@ def background_update_task():
             # Sleep longer after errors
             time.sleep(60)
 
+def update_population_data():
+    """1시간마다 인구수 데이터를 업데이트하는 백그라운드 작업"""
+    from service.population import _population_cache
+    
+    while True:
+        try:
+            # 인구수 데이터 갱신
+            population_data = get_all_server_populations()
+            
+            if population_data:
+                # 현재 시간(KST)
+                current_time = get_current_time()
+                timestamp = current_time.strftime('%Y-%m-%d %H:%M:%S KST')
+                
+                # 그래프 생성
+                image_filename = generate_population_graph(population_data)
+                image_url = f"/images/{image_filename}" if image_filename else None
+                
+                # 캐시 업데이트
+                _population_cache["data"] = population_data
+                _population_cache["timestamp"] = timestamp
+                _population_cache["imageUrl"] = image_url
+                _population_cache["cache_time"] = current_time
+                _population_cache["last_updated"] = current_time
+                
+                print(f"[{current_time.strftime('%Y-%m-%d %H:%M:%S KST')}] 인구수 데이터 업데이트 완료")
+            
+            # 1시간 대기
+            time.sleep(3600)  # 1시간 = 3600초
+            
+        except Exception as e:
+            print(f"인구수 데이터 업데이트 오류: {e}")
+            traceback.print_exc()
+            # 오류 발생 시 10분 후 재시도
+            time.sleep(600)
+
 def start_background_tasks():
     """Start all background tasks in separate threads"""
-    # Start character update thread
+    # 캐릭터 업데이트 스레드 시작
     update_thread = threading.Thread(target=background_update_task, daemon=True)
     update_thread.name = "character-update-thread"
     update_thread.start()
     #logger.info("Started background character update thread")
     
-    return update_thread
+    # 인구수 업데이트 스레드 시작
+    population_thread = threading.Thread(target=update_population_data, daemon=True)
+    population_thread.name = "population-update-thread"
+    population_thread.start()
+    print("인구수 업데이트 백그라운드 스레드 시작됨")
+    
+    return [update_thread, population_thread]
