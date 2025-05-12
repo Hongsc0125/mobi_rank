@@ -1,6 +1,6 @@
-from service.full_data import fetch_rank_via_requests, parse_rank_html
-from service.db import get_character_data, has_recent_data
-from service.async_db import async_insert_data
+from service.full_data import fetch_all_ranks, parse_rank_html
+from service.db import get_character_data, has_recent_data, get_all_ranks_data
+from service.async_db import async_insert_all_rank_data
 import logging
 from service.db_session import KST, get_current_time
 
@@ -8,26 +8,31 @@ logger = logging.getLogger(__name__)
 
 def rank_data(server=None, name=""):
     try:
-        # 먼저 캐시에서 데이터 확인
-        recent_data = has_recent_data(server, name)
-        if recent_data:
-            logger.info(f"캐시에서 데이터 검색: {recent_data}")
+        # 먼저 캐시에서 데이터 확인 (세 가지 랭킹에 대한 캐시 검색)
+        recent_all_ranks = get_all_ranks_data(server, name)
+        
+        # 캐시가 있으면 그대로 반환
+        if recent_all_ranks and recent_all_ranks.get("rankings"):
+            logger.info(f"캐시에서 모든 랭킹 데이터 검색: {recent_all_ranks}")
             return {
                 "success": True, 
-                "data": recent_data,
+                "data": recent_all_ranks,
                 "message": "Retrieved from cache (less than 10 minutes old)",
                 "from_cache": True
             }
         
-        # 캐시에 없으면 API에서 가져오기
-        html_data = fetch_rank_via_requests(server, name)
-        # logger.info(f"API에서 데이터 가져오기: {html_data}")
-        parsed_data = parse_rank_html(html_data)
-        logger.info(f"파싱된 데이터: {parsed_data}")
+        # 캐시에 없으면 세 가지 랭킹(전투력, 매력, 생활력) 데이터를 동시에 가져옴
+        logger.info(f"서버 '{server}'에서 캐릭터 '{name}'의 모든 랭킹 동시 조회 시작")
+        all_ranks_data = fetch_all_ranks(server, name)
+        logger.info(f"세 가지 랭킹 데이터 조회 완료: {all_ranks_data}")
         
-        # 결과가 비어있는지 확인
-        if not parsed_data:
-            logger.warning(f"API에서 데이터가 비어있음: {html_data}")
+        # 전투력 데이터가 비어있는지 확인
+        combat_data = all_ranks_data.get("ranks", {}).get("전투력", {}).get("data", [])
+        charm_data = all_ranks_data.get("ranks", {}).get("매력", {}).get("data", [])
+        life_data = all_ranks_data.get("ranks", {}).get("생활력", {}).get("data", [])
+        
+        if not combat_data and not charm_data and not life_data:
+            logger.warning(f"모든 랭킹에서 데이터가 비어있음")
             return {
                 "success": False,
                 "data": None,
@@ -35,34 +40,39 @@ def rank_data(server=None, name=""):
                 "from_cache": False
             }
         
-        # 요청한 캐릭터 데이터 먼저 찾기 - 대소문자 무시하고 비교
-        character_data = None
-        for item in parsed_data:
-            if (item['server'] == server and 
-                item['character'] == name):
-                character_data = item
-                logger.info(f"캐릭터 '{name}' 데이터 찾음: {character_data}")
-                break
+        # 비동기로 세 가지 랭킹 데이터 모두 DB에 저장
+        logger.info(f"DB에 세 가지 랭킹 데이터 저장 시작")
+        async_insert_all_rank_data(all_ranks_data, server, name)
+        logger.info(f"DB 업데이트 요청 완료")
         
-        # 비동기로 DB 업데이트 시작 (응답을 기다리지 않음)
-        now_kst = get_current_time()
-        async_insert_data(parsed_data, server, name, retrieved_at_kst=now_kst)
         
-        if character_data:
-            return {
-                "success": True, 
-                "data": character_data,
-                "message": "Character found in rankings (DB update in progress)",
-                "from_cache": False
+        # 캐릭터 데이터 찾기 (모든 랭킹에서 찾음)
+        character_data = {
+            "character": name,
+            "server": server,
+            "retrieved_at": all_ranks_data.get("retrieved_at"),
+            "rankings": {
+                "전투력": None,
+                "매력": None,
+                "생활력": None
             }
-        else:
-            # 데이터는 있지만 특정 캐릭터를 찾지 못한 경우
-            return {
-                "success": False,
-                "data": None,
-                "message": f"캐릭터 '{name}'을(를) 서버 '{server}'에서 찾을 수 없습니다.",
-                "from_cache": False
-            }
+        }
+        
+        # 각 랭킹에서 캐릭터 검색
+        for rank_type, rank_data in all_ranks_data.get("ranks", {}).items():
+            for item in rank_data.get("data", []):
+                if (item.get('server') == server and item.get('character') == name):
+                    character_data["rankings"][rank_type] = item
+                    logger.info(f"캐릭터 '{name}'의 {rank_type} 랭킹 데이터 찾음")
+                    break
+        
+        # 캐릭터 데이터 반환
+        return {
+            "success": True, 
+            "data": character_data,
+            "message": "Character found in rankings (DB update in progress)",
+            "from_cache": False
+        }
     except ValueError as e:
         return {"success": False, "error": str(e)}
     except Exception as e:

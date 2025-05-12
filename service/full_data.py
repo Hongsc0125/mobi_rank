@@ -28,8 +28,8 @@ def get_driver():
     opts.add_experimental_option("excludeSwitches", ["enable-logging"])
     return webdriver.Chrome(service=Service(), options=opts)
 
-def fetch_rank_via_requests(server=None, name=""):
-    list_url = "https://mabinogimobile.nexon.com/Ranking/List?t=1"
+def fetch_rank_via_requests(server=None, name="", rank_type=1):
+    list_url = f"https://mabinogimobile.nexon.com/Ranking/List?t={rank_type}"
     api_url  = "https://mabinogimobile.nexon.com/Ranking/List/rankdata"
 
     s = switch_server(server_name=server)
@@ -51,7 +51,7 @@ def fetch_rank_via_requests(server=None, name=""):
         "Content-Type":        "application/x-www-form-urlencoded; charset=UTF-8",
     }
     data = {
-        "t":       "1",
+        "t":       str(rank_type),
         "pageno":  "1",
         "s":       s,
         "c":       "0",
@@ -74,6 +74,57 @@ def switch_server(server_name):
         "칼릭스": 7
     }
     return server_map.get(server_name, None)
+
+def fetch_all_ranks(server=None, name=""):
+    """
+    캐릭터의 전투력(t=1), 매력(t=2), 생활력(t=3) 랭킹을 동시에 조회합니다.
+    3개의 쓰레드를 사용하여 병렬로 처리합니다.
+    """
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+    import pytz
+    from datetime import datetime
+    
+    # 한국 시간대 설정
+    kst = pytz.timezone('Asia/Seoul')
+    current_time = datetime.now(kst)
+    
+    def fetch_rank_thread(rank_type):
+        try:
+            html = fetch_rank_via_requests(server, name, rank_type)
+            result = parse_rank_html(html)
+            # 랭킹 타입 이름 정의
+            rank_type_names = {1: "전투력", 2: "매력", 3: "생활력"}
+            return {
+                "type": rank_type_names.get(rank_type, f"타입{rank_type}"),
+                "data": result,
+                "retrieved_at": current_time.strftime("%Y-%m-%d %H:%M:%S")
+            }
+        except Exception as e:
+            print(f"Error fetching rank type {rank_type}: {e}")
+            return {
+                "type": f"타입{rank_type}",
+                "data": [],
+                "error": str(e),
+                "retrieved_at": current_time.strftime("%Y-%m-%d %H:%M:%S")
+            }
+    
+    results = {}
+    
+    # ThreadPoolExecutor로 3개의 랭킹 데이터 병렬 조회
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        futures = [executor.submit(fetch_rank_thread, t) for t in [1, 2, 3]]
+        
+        for future in futures:
+            result = future.result()
+            results[result["type"]] = result
+    
+    return {
+        "character": name,
+        "server": server,
+        "ranks": results,
+        "retrieved_at": current_time.strftime("%Y-%m-%d %H:%M:%S")
+    }
 
 def parse_rank_html(html: str):
     soup = BeautifulSoup(html, 'html.parser')

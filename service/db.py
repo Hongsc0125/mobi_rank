@@ -165,6 +165,57 @@ def get_character_data(server, character, div=1):
         db.close()
 
 
+def get_all_ranks_data(server, character):
+    """
+    캐릭터의 세 가지 랭킹(전투력, 매력, 생활력) 데이터를 캐시에서 조회
+    최근 10분 이내의 데이터만 반환, 없으면 None 반환
+    """
+    if not server or not character:
+        return None
+    
+    # 랭킹 타입매핑
+    div_to_rank_type = {
+        1: "전투력",
+        2: "매력",
+        3: "생활력"
+    }
+    
+    # 현재 시간(한국 시간 기준)
+    now_kst = get_current_time()
+    
+    # 각 랭킹 타입별로 캐시데이터 조회
+    ranks_data = {}
+    have_data = False
+    
+    for div, rank_type in div_to_rank_type.items():
+        data = has_recent_data(server, character, div)
+        if data:
+            have_data = True
+            ranks_data[rank_type] = {
+                "type": rank_type,
+                "data": [data],  # DB에서 가져온 경우 단일 레코드이민로 리스트로 만듦
+                "retrieved_at": data.get("retrieved_at").strftime("%Y-%m-%d %H:%M:%S") if data.get("retrieved_at") else now_kst.strftime("%Y-%m-%d %H:%M:%S")
+            }
+        else:
+            ranks_data[rank_type] = {
+                "type": rank_type,
+                "data": [],
+                "retrieved_at": now_kst.strftime("%Y-%m-%d %H:%M:%S")
+            }
+    
+    # 적어도 하나의 랭킹 데이터가 있으면 캐시 데이터 반환
+    if have_data:
+        character_data = {
+            "character": character,
+            "server": server,
+            "retrieved_at": now_kst.strftime("%Y-%m-%d %H:%M:%S"),
+            "rankings": ranks_data
+        }
+        return character_data
+    
+    # 없으면 None 반환
+    return None
+
 def get_980_data(server_name):
     """Get characters beyond rank 980 for exploration"""
     db = SessionLocal()
