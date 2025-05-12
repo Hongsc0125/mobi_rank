@@ -7,6 +7,7 @@ from sqlalchemy import text
 from service.full_data import fetch_rank_via_requests, parse_rank_html
 from service.db_session import SessionLocal, KST, get_current_time
 from service.population import get_all_server_populations, generate_population_graph
+from service.population_statistics import update_population_statistics
 
 # #logger = logging.get#logger(__name__)
 
@@ -143,6 +144,9 @@ def update_population_data():
                 
                 print(f"[{current_time.strftime('%Y-%m-%d %H:%M:%S KST')}] 인구수 데이터 업데이트 완료")
             
+            # 인구수 통계 수집 및 DB 저장
+            update_population_statistics()
+            
             # 1시간 대기
             time.sleep(3600)  # 1시간 = 3600초
             
@@ -151,6 +155,29 @@ def update_population_data():
             traceback.print_exc()
             # 오류 발생 시 10분 후 재시도
             time.sleep(600)
+
+def update_population_statistics_task():
+    """인구수 통계 데이터를 1시간마다 업데이트하는 백그라운드 작업"""
+    while True:
+        try:
+            # 현재 시간(KST)
+            current_time = get_current_time()
+            
+            # 인구수 통계 데이터 업데이트
+            result = update_population_statistics()
+            if result:
+                print(f"[{current_time.strftime('%Y-%m-%d %H:%M:%S KST')}] 인구수 통계 데이터 업데이트 완료")
+            else:
+                print(f"[{current_time.strftime('%Y-%m-%d %H:%M:%S KST')}] 인구수 통계 데이터 업데이트 실패")
+                
+            # 1시간 대기
+            time.sleep(3600)  # 1시간 = 3600초
+            
+        except Exception as e:
+            print(f"인구수 통계 업데이트 오류: {e}")
+            traceback.print_exc()
+            # 오류 발생 시 15분 후 재시도
+            time.sleep(900)
 
 def start_background_tasks():
     """Start all background tasks in separate threads"""
@@ -166,4 +193,10 @@ def start_background_tasks():
     population_thread.start()
     print("인구수 업데이트 백그라운드 스레드 시작됨")
     
-    return [update_thread, population_thread]
+    # 인구수 통계 업데이트 스레드 시작
+    stats_thread = threading.Thread(target=update_population_statistics_task, daemon=True)
+    stats_thread.name = "population-statistics-thread"
+    stats_thread.start()
+    print("인구수 통계 업데이트 백그라운드 스레드 시작됨")
+    
+    return [update_thread, population_thread, stats_thread]
