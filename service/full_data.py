@@ -84,22 +84,36 @@ def fetch_all_ranks(server=None, name=""):
     from concurrent.futures import ThreadPoolExecutor
     import pytz
     from datetime import datetime
+    import logging
+    
+    # 로거 가져오기
+    logger = logging.getLogger(__name__)
+    
+    logger.info(f"fetch_all_ranks 시작: 서버={server}, 캐릭터={name}")
     
     # 한국 시간대 설정
     kst = pytz.timezone('Asia/Seoul')
     current_time = datetime.now(kst)
+    logger.info(f"현재 KST 시간: {current_time}")
     
     def fetch_rank_thread(rank_type):
         try:
+            logger.info(f"랭킹 조회 시작 (rank_type={rank_type})")
             html = fetch_rank_via_requests(server, name, rank_type)
             result = parse_rank_html(html)
+            logger.info(f"랭킹 조회 결과 (rank_type={rank_type}) - 데이터 개수: {len(result)}, 데이터 일부: {result[:3] if result else '[]'}")
+            
             # 랭킹 타입 이름 정의
             rank_type_names = {1: "전투력", 2: "매력", 3: "생활력"}
-            return {
-                "type": rank_type_names.get(rank_type, f"타입{rank_type}"),
+            rank_type_name = rank_type_names.get(rank_type, f"타입{rank_type}")
+            
+            response = {
+                "type": rank_type_name,
                 "data": result,
                 "retrieved_at": current_time.strftime("%Y-%m-%d %H:%M:%S")
             }
+            logger.info(f"{rank_type_name} 랭킹 조회 완료: 데이터 크기={len(result)}")
+            return response
         except Exception as e:
             print(f"Error fetching rank type {rank_type}: {e}")
             return {
@@ -113,18 +127,23 @@ def fetch_all_ranks(server=None, name=""):
     
     # ThreadPoolExecutor로 3개의 랭킹 데이터 병렬 조회
     with ThreadPoolExecutor(max_workers=3) as executor:
+        logger.info("3개의 랭킹 병렬 조회 시작")
         futures = [executor.submit(fetch_rank_thread, t) for t in [1, 2, 3]]
         
         for future in futures:
             result = future.result()
             results[result["type"]] = result
+            logger.info(f"{result['type']} 랭킹 처리완료: 데이터 크기={len(result.get('data', []))}")
     
-    return {
+    response = {
         "character": name,
         "server": server,
         "ranks": results,
         "retrieved_at": current_time.strftime("%Y-%m-%d %H:%M:%S")
     }
+    
+    logger.info(f"fetch_all_ranks 완료: 랭킹 수={len(results)}, 출력 예시={str(response)[:200]}...")
+    return response
 
 def parse_rank_html(html: str):
     soup = BeautifulSoup(html, 'html.parser')
