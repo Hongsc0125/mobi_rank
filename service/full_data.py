@@ -24,7 +24,6 @@ def get_driver():
     opts.add_argument("--no-sandbox")
     opts.add_argument("--disable-dev-shm-usage")
     opts.add_argument("window-size=1200,800")
-    # suppress DevTools listening log
     opts.add_experimental_option("excludeSwitches", ["enable-logging"])
     return webdriver.Chrome(service=Service(), options=opts)
 

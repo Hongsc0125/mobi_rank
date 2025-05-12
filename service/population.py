@@ -138,6 +138,10 @@ def generate_population_graph(population_data):
         str: 생성된 이미지 파일 경로
     """
     try:
+        # 백그라운드 스레드에서 Matplotlib 사용을 위한 설정
+        import matplotlib
+        matplotlib.use('Agg')  # GUI 없이 이미지만 생성하는 모드
+        
         # 한글 폰트 설정
         plt.rcParams['font.family'] = 'Malgun Gothic'
         plt.rcParams['axes.unicode_minus'] = False
@@ -189,7 +193,7 @@ def generate_population_graph(population_data):
         filepath = os.path.join(image_dir, filename)
         
         plt.savefig(filepath, dpi=100)
-        plt.close()
+        plt.close('all')  # 모든 플롯 닫기
         
         return filename
     except Exception as e:
