@@ -16,51 +16,83 @@ class SuppressChromedriverMessage(logging.Filter):
 logging.getLogger().addFilter(SuppressChromedriverMessage())
 
 def get_driver():
-
+    """크롬 웹드라이버를 생성하고 반환합니다. 필요한 설정을 적용합니다."""
     chromedriver_autoinstaller.install()
 
     opts = Options()
     opts.add_argument("--headless=new")
     opts.add_argument("--no-sandbox")
     opts.add_argument("--disable-dev-shm-usage")
+    opts.add_argument("--disable-gpu")
     opts.add_argument("window-size=1200,800")
+    # 브라우저 프로세스 고아(orphaned) 방지
+    opts.add_argument("--disable-features=site-per-process")
+    # ShutdownOS="True" 추가하여 프로세스 종료 보장
+    opts.add_experimental_option("detach", False)
     opts.add_experimental_option("excludeSwitches", ["enable-logging"])
-    return webdriver.Chrome(service=Service(), options=opts)
+    
+    # 서비스 타임아웃 증가
+    service = Service()
+    service.service_args = ['--verbose', '--log-path=chromedriver.log']
+    
+    return webdriver.Chrome(service=service, options=opts)
 
 def fetch_rank_via_requests(server=None, name="", rank_type=1):
+    """특정 서버와 캐릭터 이름으로 랭킹 데이터를 가져옵니다."""
     list_url = f"https://mabinogimobile.nexon.com/Ranking/List?t={rank_type}"
     api_url  = "https://mabinogimobile.nexon.com/Ranking/List/rankdata"
 
     s = switch_server(server_name=server)
+    driver = None
+    
+    try:
+        # 드라이버 생성 및 URL 접속
+        driver = get_driver()
+        driver.set_page_load_timeout(30)  # 페이지 로드 타임아웃 설정
+        driver.get(list_url)
+        time.sleep(2)
 
-    driver = get_driver()
-    driver.get(list_url)
-    time.sleep(2)
+        # 쿠키 수집 및 세션 설정
+        sess = requests.Session()
+        for ck in driver.get_cookies():
+            sess.cookies.set(ck['name'], ck['value'])
+            
+        headers = {
+            "User-Agent":          driver.execute_script("return navigator.userAgent;"),
+            "Accept":              "*/*",
+            "Referer":             list_url,
+            "X-Requested-With":    "XMLHttpRequest",
+            "Origin":              "https://mabinogimobile.nexon.com",
+            "Content-Type":        "application/x-www-form-urlencoded; charset=UTF-8",
+        }
+        data = {
+            "t":       str(rank_type),
+            "pageno":  "1",
+            "s":       s,
+            "c":       "0",
+            "search":  name,
+        }
 
-    sess = requests.Session()
-    for ck in driver.get_cookies():
-        sess.cookies.set(ck['name'], ck['value'])
-        
-    headers = {
-        "User-Agent":          driver.execute_script("return navigator.userAgent;"),
-        "Accept":              "*/*",
-        "Referer":             list_url,
-        "X-Requested-With":    "XMLHttpRequest",
-        "Origin":              "https://mabinogimobile.nexon.com",
-        "Content-Type":        "application/x-www-form-urlencoded; charset=UTF-8",
-    }
-    data = {
-        "t":       str(rank_type),
-        "pageno":  "1",
-        "s":       s,
-        "c":       "0",
-        "search":  name,
-    }
-
-    resp = sess.post(api_url, headers=headers, data=data)
-    driver.quit()
-    resp.raise_for_status()
-    return resp.text
+        # API 요청 수행
+        resp = sess.post(api_url, headers=headers, data=data, timeout=30)
+        resp.raise_for_status()
+        return resp.text
+    
+    except Exception as e:
+        logging.error(f"랭킹 데이터 요청 중 오류 (타입 {rank_type}): {str(e)}")
+        raise
+    
+    finally:
+        # 드라이버 정리 보장
+        if driver:
+            try:
+                # 모든 윈도우 닫기
+                driver.execute_script("window.close();")
+                # 드라이버 종료
+                driver.quit()
+            except Exception as e:
+                logging.warning(f"드라이버 종료 중 오류: {str(e)}")
+                # 오류가 발생해도 계속 진행
 
 def switch_server(server_name):
     server_map = {
@@ -114,7 +146,10 @@ def fetch_all_ranks(server=None, name=""):
             logger.info(f"{rank_type_name} 랭킹 조회 완료: 데이터 크기={len(result)}")
             return response
         except Exception as e:
-            print(f"Error fetching rank type {rank_type}: {e}")
+            logger.error(f"Error fetching rank type {rank_type}: {e}")
+            # 메모리 정리
+            import gc
+            gc.collect()
             return {
                 "type": f"타입{rank_type}",
                 "data": [],
@@ -124,15 +159,24 @@ def fetch_all_ranks(server=None, name=""):
     
     results = {}
     
-    # ThreadPoolExecutor로 3개의 랭킹 데이터 병렬 조회
+    # ThreadPoolExecutor로 3개의 랭킹 데이터 병렬 조회 (원래대로 3개 실행)
     with ThreadPoolExecutor(max_workers=3) as executor:
         logger.info("3개의 랭킹 병렬 조회 시작")
+        # 모든 랭킹을 동시 실행
         futures = [executor.submit(fetch_rank_thread, t) for t in [1, 2, 3]]
         
+        # 모든 랭킹 결과 처리
         for future in futures:
-            result = future.result()
-            results[result["type"]] = result
-            logger.info(f"{result['type']} 랭킹 처리완료: 데이터 크기={len(result.get('data', []))}")
+            try:
+                result = future.result(timeout=60)  # 60초 타임아웃 설정
+                results[result["type"]] = result
+                logger.info(f"{result['type']} 랭킹 처리완료: 데이터 크기={len(result.get('data', []))}")
+            except Exception as e:
+                logger.error(f"랭킹 데이터 처리 실패: {str(e)}")
+            
+        # 추가 메모리 정리
+        import gc
+        gc.collect()
     
     response = {
         "character": name,
