@@ -49,9 +49,13 @@ active_threads = []  # 활성 쓰레드 관리
 thread_status = {}   # 쓰레드 상태 관리
 thread_status_lock = threading.Lock()  # 쓰레드 상태 락
 
-# 마지막 크롤링 위치를 서버별로 추적
-last_crawled_position = {}
-last_crawled_position_lock = threading.Lock()
+# 마지막으로 크롤링한 캐릭터 인덱스를 서버별로 저장
+last_crawled_character_index = {}
+last_crawled_character_lock = threading.Lock()
+
+# 서버별 처리할 캐릭터 목록
+server_characters = {}
+server_characters_lock = threading.Lock()
 
 # 최대 가져오기 재시도 횟수
 MAX_FETCH_RETRIES = 3
@@ -156,20 +160,16 @@ def get_server_name(server_num):
     """서버 번호를 서버 이름으로 변환"""
     return SERVER_NAMES.get(server_num, "데이안")  # 기본값 "데이안"
 
-def fetch_rank_page_by_pageno(driver, server_num, page_num=1, div=1, high_performance_driver=True):
-    """페이지 번호로 기존 드라이버를 사용하여 랭킹 데이터 가져오기, 오류 시 재시도"""
+def fetch_rank_page(driver, server_num, search_name="", div=1, high_performance_driver=True):
+    """캐릭터 이름으로 기존 드라이버를 사용하여 랭킹 데이터 가져오기, 오류 시 재시도"""
     list_url = "https://mabinogimobile.nexon.com/Ranking/List?t=1"
     api_url  = "https://mabinogimobile.nexon.com/Ranking/List/rankdata"
-
+    
     attempts = 0
     last_exception = None
-
+    
     while attempts < MAX_FETCH_RETRIES:
         try:
-            if driver is None:
-                 logger.info(f"드라이버 없음, 서버 {server_num}, 페이지 {page_num}에 대한 새 드라이버 생성")
-                 driver = get_driver(high_performance=high_performance_driver)
-
             # 이미 리스트 페이지에 있지 않은 경우에만 페이지 이동
             if not driver.current_url.startswith(list_url):
                 driver.get(list_url)
@@ -190,18 +190,17 @@ def fetch_rank_page_by_pageno(driver, server_num, page_num=1, div=1, high_perfor
             }
             data = {
                 "t":       str(div),
-                "pageno":  str(page_num),
                 "s":       server_num,
                 "c":       "0",
-                "search":  "",
+                "search":  search_name,
             }
 
             resp = sess.post(api_url, headers=headers, data=data)
-            resp.raise_for_status() # HTTP 오류 발생 시 예외 발생
-            return resp.text, driver # 성공 시 HTML과 드라이버 반환
+            resp.raise_for_status()
+            return resp.text, driver
 
         except (requests.exceptions.RequestException, WebDriverException) as e:
-            logger.warning(f"페이지 가져오기 실패: 서버 {server_num}, 페이지 {page_num}, 시도 {attempts + 1}/{MAX_FETCH_RETRIES}. 오류: {e}")
+            logger.warning(f"캐릭터 검색 실패: 서버 {server_name}, 검색어 '{search_name}', 시도 {attempts + 1}/{MAX_FETCH_RETRIES}. 오류: {e}")
             last_exception = e
             attempts += 1
             if attempts < MAX_FETCH_RETRIES:
@@ -209,17 +208,15 @@ def fetch_rank_page_by_pageno(driver, server_num, page_num=1, div=1, high_perfor
                     try:
                         driver.quit()
                     except Exception as dq_err:
-                        logger.error(f"문제 있는 드라이버 종료 실패: {dq_err}")
-                logger.info(f"서버 {server_num}, 페이지 {page_num}에 대한 드라이버 재생성 (시도 {attempts + 1})")
+                        logger.error(f"문제가 있는 드라이버 종료 오류: {dq_err}")
+                logger.info(f"서버 {server_name}용 드라이버 재생성 (시도 {attempts + 1}).")
                 driver = get_driver(high_performance=high_performance_driver)
                 time.sleep(5) # 새 드라이버 안정화 및 IP 변경 등 외부 요인 대기
             else:
-                logger.error(f"최종 실패: 서버 {server_num}, 페이지 {page_num}. 마지막 오류: {last_exception}")
-                raise last_exception
-    return None, driver # 이론적으로 도달하지 않지만, 만약을 위해 추가
+                logger.error(f"캐릭터 검색 실패: 서버 {server_name}, 검색어 '{search_name}'에 대한 모든 {MAX_FETCH_RETRIES}번의 재시도 실패. 마지막 오류: {last_exception}")
+                return None, driver # 모든 시도 실패 시 None 반환
 
 def parse_rank_range(html: str):
-    """HTML에서 랭킹 범위(예: "5,361위 ~ 5,380위") 파싱"""
     soup = BeautifulSoup(html, 'html.parser')
     range_span = soup.select_one("div.pager div.current_range span")
     if not range_span:
@@ -233,14 +230,11 @@ def parse_rank_range(html: str):
     return None
 
 def parse_rank_html(html: str):
-    """HTML에서 랭킹 데이터 파싱"""
     soup = BeautifulSoup(html, 'html.parser')
     result = []
 
-    # "데이터 없음" 메시지가 있는지 확인
     no_data = soup.select_one("div.no_data")
     if no_data:
-        # 결과 없음 시 빈 리스트 반환
         return []
 
     for li in soup.select("ul.list li.item"):
@@ -274,51 +268,6 @@ def parse_rank_html(html: str):
     
     return result
 
-def get_max_rank_position(server_num):
-    """서버의 가장 낮은 랭킹(높은 숫자)를 DB에서 조회
-    
-    Args:
-        server_num: 서버 번호
-        
-    Returns:
-        max_rank: 가장 낮은 랭킹 위치 (높은 숫자)
-        max_page: 최대 페이지 번호
-    """
-    try:
-        from service.db import SessionLocal
-        from sqlalchemy import text
-        
-        session = SessionLocal()
-        server_name = get_server_name(server_num)
-        
-        try:
-            # 해당 서버의 가장 낮은 랭킹(높은 숫자)을 가진 캐릭터 찾기
-            query = text("""
-                SELECT max(rank_position) as max_rank
-                FROM mabinogi_ranking
-                WHERE server_name = :server AND div = 1
-            """)
-            
-            result = session.execute(query, {'server': server_name})
-            row = result.fetchone()
-            
-            if row and row[0]:
-                max_rank = row[0]
-                # 페이지당 20개 항목, 올림으로 계산
-                max_page = (max_rank + 19) // 20
-                # logger.info(f"서버 {server_num}({server_name})의 최대 랭킹: {max_rank}, 최대 페이지: {max_page}")
-                return max_rank, max_page
-            
-            # 데이터가 없으면 기본값 반환
-            logger.warning(f"서버 {server_num}({server_name})의 랭킹 데이터가 없음. 기본값 사용.")
-            return 1000, 50  # 기본값: 1000위, 50페이지
-            
-        finally:
-            session.close()
-            
-    except Exception as e:
-        logger.error(f"최대 랭킹 조회 중 오류: {e}", exc_info=True)
-        return 1000, 50  # 오류 시 기본값
 
 def insert_ranking_data(data, div=1):
     """랭킹 데이터를 DB에 저장"""
@@ -373,46 +322,114 @@ class DriverPool:
 # 배치 처리를 위한 데이터 수집기
 class DataCollector:
     """데이터를 배치로 모아서 DB에 일괄 저장"""
-    def __init__(self, batch_size=50, div=1):
+    def __init__(self, batch_size=1000, div=1):
         self.batch = []
         self.batch_size = batch_size
         self.div = div
         self.lock = threading.Lock()
+        self.last_flush_time = datetime.now(KST)
+        # 마지막 DB 저장 시간 (최대 5분마다 자동 저장)
+        self.max_save_interval = timedelta(minutes=5)
     
     def add_data(self, data):
         """데이터 추가, 배치 크기에 도달하면 자동 저장"""
         flush_needed = False
+        current_time = datetime.now(KST)
+        time_based_flush = False
+        
         with self.lock:
             self.batch.extend(data)
+            # 배치 크기 기반 저장 조건
             if len(self.batch) >= self.batch_size:
                 flush_needed = True
+            # 시간 기반 저장 조건
+            elif (current_time - self.last_flush_time) > self.max_save_interval and self.batch:
+                flush_needed = True
+                time_based_flush = True
         
         if flush_needed:
+            batch_size = len(self.batch)
             self.flush()
+            if time_based_flush:
+                logger.info(f"시간 기반 자동 저장: {batch_size}개 항목 ({(current_time - self.last_flush_time).total_seconds():.0f}초 경과)")
     
     def flush(self):
         """현재 배치 데이터 저장"""
         with self.lock:
             if self.batch:
-                try:
-                    insert_ranking_data(self.batch, div=self.div)
-                    # logger.info(f"{len(self.batch)}개 항목 일괄 저장 완료")
-                except Exception as e:
-                    logger.error(f"배치 데이터 저장 중 오류: {e}")
-                self.batch = []
-                # 명시적 가비지 컬렉션으로 메모리 최적화
-                gc.collect()
+                retry_count = 0
+                max_retries = 3
+                batch_copy = self.batch.copy()  # 배치 데이터 복사 (안전한 재시도를 위해)
+                batch_size = len(batch_copy)
+                
+                while retry_count < max_retries:
+                    try:
+                        insert_ranking_data(batch_copy, div=self.div)
+                        logger.info(f"{batch_size}개 항목 일괄 저장 완료")
+                        # 성공 시 배치 초기화 및 마지막 저장 시간 갱신
+                        self.batch = []
+                        self.last_flush_time = datetime.now(KST)
+                        # 명시적 가비지 컬렉션으로 메모리 최적화
+                        if batch_size > 500:
+                            gc.collect()
+                        break
+                    except Exception as e:
+                        retry_count += 1
+                        logger.error(f"배치 데이터 저장 중 오류 (시도 {retry_count}/{max_retries}): {e}")
+                        if retry_count < max_retries:
+                            # 지수 백오프로 재시도 간격 증가 (1초, 2초, 4초...)
+                            sleep_time = 2 ** (retry_count - 1)
+                            time.sleep(sleep_time)
+                        else:
+                            logger.critical(f"배치 데이터 저장 실패: {batch_size}개 항목 - {e}")
+                            # 최대 재시도 실패 시 배치 초기화 (데이터 손실은 있지만 프로세스 계속 진행)
+                            self.batch = []
+                            self.last_flush_time = datetime.now(KST)
 
+
+def get_character_list_for_server(server_name, div=1):
+    """서버에서 크롤링할 캐릭터 목록 가져오기 (마지막 랭킹부터 1등까지 정렬)"""
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                query = """
+                WITH ranked_chars AS (
+                    SELECT character_name, rank_position, 
+                           ROW_NUMBER() OVER (PARTITION BY character_name ORDER BY retrieved_at DESC) as rn
+                    FROM mabinogi_ranking 
+                    WHERE server_name = %s AND div = %s
+                )
+                SELECT character_name 
+                FROM ranked_chars 
+                WHERE rn = 1 AND character_name != '알수없음'
+                ORDER BY rank_position DESC
+                """
+                cursor.execute(query, (server_name, div))
+                characters = [row[0] for row in cursor.fetchall()]
+                
+                if not characters:
+                    logger.warning(f"서버 {server_name}에서 크롤링할 캐릭터를 찾을 수 없음. 기본 캐릭터 사용.")
+
+                    return ["힝트"]
+                    
+                logger.info(f"서버 {server_name}에서 {len(characters)}개의 캐릭터를 마지막 랭킹부터 크롤링할 예정")
+                return characters
+                
+    except Exception as e:
+        logger.error(f"캐릭터 목록 가져오기 실패: {e}", exc_info=True)
+        # 오류 발생 시 기본 목록 반환
+        return ["힝트"]
 
 def sequential_rank_crawl_worker(server_num, div=1):
     """마지막 랭킹부터 1등까지 순차적으로 크롤링하는 워커 함수
-    완료 후 다시 마지막 랭킹부터 시작하는 순환 방식
+    캐릭터 이름 기반 검색 방식
     
     Args:
         server_num: 서버 번호
-        div: 랭킹 분류 (기본값: 1 = 전체랭킹)
+        div: 랭킹 분류 (기본값: 1)
     """
-    thread_name = f"순차크롤러_{server_num}"
+    server_name = get_server_name(server_num)
+    thread_name = f"순차크롤러_{server_name}"
     update_thread_status(thread_name, "시작됨")
     
     # 드라이버 준비
@@ -420,65 +437,62 @@ def sequential_rank_crawl_worker(server_num, div=1):
     try:
         driver = get_driver(high_performance=True)
         
-        # 데이터 수집기 초기화
-        collector = DataCollector(batch_size=50, div=div)
+        # 데이터 수집기 초기화 (100만 건용 배치 크기 증가)
+        collector = DataCollector(batch_size=2000, div=div)
+        
+        # 서버의 이름 가져오기
+        server_name = get_server_name(server_num)
+        
+        # 서버별 캐릭터 목록 초기화
+        with server_characters_lock:
+            if server_name not in server_characters:
+                server_characters[server_name] = get_character_list_for_server(server_name, div)
         
         while not shutdown_event.is_set():
             try:
-                # 서버의 최대 랭킹과 페이지 가져오기
-                max_rank, max_page = get_max_rank_position(server_num)
+                # 서버의 캐릭터 목록 확인
+                with server_characters_lock:
+                    chars = server_characters[server_name]
                 
-                # 시작 위치 가져오기 (처음이면 마지막 페이지부터, 아니면 저장된 위치부터)
-                with last_crawled_position_lock:
-                    if server_num not in last_crawled_position:
-                        current_page = max_page
+                # 현재 처리할 캐릭터 인덱스 가져오기
+                current_char_idx = 0
+                total_chars = len(chars)
+                
+                with last_crawled_character_lock:
+                    if server_name not in last_crawled_character_index:
+                        current_char_idx = 0  # 처음부터 시작 (이미 랭킹 내림차순으로 정렬되어 있음)
                     else:
-                        current_page = last_crawled_position[server_num]
-                        # 이전 위치가 최대 페이지보다 크면 최대 페이지로 조정
-                        if current_page > max_page:
-                            current_page = max_page
-                        # 마지막 위치가 1이면 다시 마지막 페이지로 순환
-                        elif current_page <= 1:
-                            current_page = max_page
-                        else:
-                            # 이전 위치에서 1 감소
-                            current_page -= 1
+                        current_char_idx = (last_crawled_character_index[server_name] + 1) % total_chars  # 다음 캐릭터로
+                    
+                    # 현재 캐릭터 인덱스 저장
+                    last_crawled_character_index[server_name] = current_char_idx
                 
-                update_thread_status(thread_name, f"크롤링 중", f"서버 {server_num}, 페이지 {current_page}/{max_page}")
+                # 현재 처리할 캐릭터 이름 가져오기
+                current_char = chars[current_char_idx]
                 
-                # 페이지 가져오기 및 처리
-                html, driver = fetch_rank_page_by_pageno(driver, server_num, current_page, div, high_performance_driver=True)
+                update_thread_status(thread_name, f"캐릭터 크롤링 중", f"서버 {server_name}, 캐릭터 {current_char} ({current_char_idx+1}/{total_chars})")
+                
+                # 캐릭터 이름으로 검색하여 데이터 가져오기
+                # API 호출에는 server_num을 사용
+                html, driver = fetch_rank_page(driver, server_num, current_char, div, high_performance_driver=True)
                 if html is None:
-                    logger.error(f"서버 {server_num}, 페이지 {current_page} 가져오기 실패. 다음으로 넘어감.")
-                    # 실패해도 위치는 업데이트
-                    with last_crawled_position_lock:
-                        last_crawled_position[server_num] = current_page
+                    logger.error(f"서버 {server_name}, 캐릭터 '{current_char}' 검색 실패. 다음으로 넘어감.")
                     # 잠시 대기 후 다시 시도
                     time.sleep(5)
                     continue
-                
-                # 랭킹 범위 파싱
-                range_text = parse_rank_range(html)
                 
                 # 랭킹 데이터 파싱
                 parsed_data = parse_rank_html(html)
                 
                 if not parsed_data:
-                    logger.warning(f"서버 {server_num}, 페이지 {current_page}에서 데이터를 찾을 수 없음")
+                    logger.warning(f"서버 {server_name}, 캐릭터 '{current_char}'에서 데이터를 찾을 수 없음")
                 else:
                     # 데이터 저장 (KST 시간 적용)
                     collector.add_data(parsed_data)
-                    
-                    # 10번째 페이지마다만 로그 출력
-                    if current_page % 10 == 0:
-                        logger.info(f"[SRV{server_num}] 페이지 {current_page}, {len(parsed_data)}개 저장")
+                    logger.info(f"[SRV{server_name}] 캐릭터 '{current_char}', {len(parsed_data)}개 저장")
                 
-                # 처리 완료된 페이지 위치 저장
-                with last_crawled_position_lock:
-                    last_crawled_position[server_num] = current_page
-                
-                # 가끔 수집기 비우기
-                if current_page % 10 == 0:
+                # 일정 간격으로 수집기 비우기 (중복 제거 및 간격 조정)
+                if current_char_idx % 10 == 0:
                     collector.flush()
                 
                 # 과부하 방지 대기
@@ -493,13 +507,25 @@ def sequential_rank_crawl_worker(server_num, div=1):
         logger.error(f"서버 {server_num} 순차 크롤러 초기화 중 오류: {e}", exc_info=True)
     
     finally:
-        # 종료 처리
+        # 종료 처리 - 남은 데이터 저장 및 리소스 정리
+        try:
+            # 남은 데이터가 있으면 마지막으로 저장 시도
+            collector.flush()
+            logger.info(f"서버 {server_name} 워커 종료 전 데이터 저장 완료")
+        except Exception as e:
+            logger.error(f"서버 {server_name} 워커 종료 전 데이터 저장 실패: {e}")
+            
         update_thread_status(thread_name, "종료됨")
+        
+        # 드라이버 정리
         if driver:
             try:
                 driver.quit()
-            except:
-                pass
+            except Exception as e:
+                logger.warning(f"드라이버 종료 중 오류: {e}")
+                
+        # 메모리 정리
+        gc.collect()
 
 
 def start_sequential_rank_crawling():
