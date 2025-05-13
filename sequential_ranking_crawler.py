@@ -1309,13 +1309,13 @@ def start_sequential_rank_crawling():
     try:
         logger.info("순차적 랭킹 크롤링 시작")
         
-        # 서버당 스레드 수를 2개로 고정
-        threads_per_server = 2
+        # 서버당 스레드 수를 1개로 고정
+        threads_per_server = 1
         
         # 시스템 사양 정보 로깅
         cpu_count = psutil.cpu_count()
         memory_gb = psutil.virtual_memory().total / (1024**3)  # GB 단위로 변환
-        logger.info(f"서버당 스레드 수: {threads_per_server} (고정값) (CPU: {cpu_count}코어, 메모리: {memory_gb:.1f}GB)")
+        logger.info(f"서버당 스레드 수: {threads_per_server} (단일 스레드 사용) (CPU: {cpu_count}코어, 메모리: {memory_gb:.1f}GB)")
         
         # 서버 번호 리스트
         server_nums = list(range(1, 8))  # 1부터 7까지의 서버
