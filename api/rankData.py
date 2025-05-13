@@ -6,17 +6,50 @@ from service.db_session import KST, get_current_time
 
 logger = logging.getLogger(__name__)
 
+def normalize_rank_data(data):
+    """랭킹 데이터 형식을 통일합니다 (캐싱 데이터와 실시간 데이터 간 일관성 유지)"""
+    if not data:
+        return data
+        
+    # 1. rankings 객체 정규화
+    if "rankings" in data:
+        for rank_type, rank_info in data["rankings"].items():
+            # change 값이 문자열인 경우 정수로 변환
+            if rank_info and "change" in rank_info:
+                try:
+                    if isinstance(rank_info["change"], str):
+                        # "-" 또는 "new"인 경우 0으로 처리
+                        if rank_info["change"] == "-" or rank_info["change"].lower() == "new":
+                            rank_info["change"] = 0
+                        else:
+                            # 숫자만 추출
+                            import re
+                            num_match = re.search(r'\d+', rank_info["change"])
+                            if num_match:
+                                rank_info["change"] = int(num_match.group(0))
+                            else:
+                                rank_info["change"] = 0
+                except (ValueError, TypeError):
+                    rank_info["change"] = 0
+                    
+            # change_type이 없는 경우 추가
+            if rank_info and "change_type" not in rank_info and "change" in rank_info:
+                rank_info["change_type"] = "none"  # 기본값
+                
+    return data
+
 def rank_data(server=None, name=""):
     try:
         # 먼저 캐시에서 데이터 확인 (세 가지 랭킹에 대한 캐시 검색)
         recent_all_ranks = get_all_ranks_data(server, name)
         
-        # 캐시가 있으면 그대로 반환
+        # 캐시가 있으면 형식 통일 후 반환
         if recent_all_ranks and recent_all_ranks.get("rankings"):
-            logger.info(f"캐시에서 모든 랭킹 데이터 검색: {recent_all_ranks}")
+            normalized_data = normalize_rank_data(recent_all_ranks)
+            logger.info(f"캐시에서 모든 랭킹 데이터 검색 및 정규화: {normalized_data}")
             return {
                 "success": True, 
-                "data": recent_all_ranks,
+                "data": normalized_data,
                 "message": "Retrieved from cache (less than 10 minutes old)",
                 "from_cache": True
             }

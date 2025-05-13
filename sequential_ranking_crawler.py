@@ -712,29 +712,137 @@ class DriverPool:
                     pass
             self.pool = []
 
+# 서버별 통계 관리를 위한 변수
+server_stats = {}
+db_stats = {
+    "processed": 0,
+    "queue_size": 0,
+    "rate": 0,
+    "last_processed": 0,
+    "batch_size": 0
+}
+last_dashboard_update = datetime.now(KST)
+dashboard_update_interval = 5  # 초 단위
+
+def update_server_stats(server_name, items_collected=0, items_flushed=0):
+    """서버별 통계 정보 갱신"""
+    global server_stats
+    if server_name not in server_stats:
+        server_stats[server_name] = {
+            "total_collected": 0,
+            "total_flushed": 0,
+            "collector_size": 0,
+            "last_update": datetime.now(KST)
+        }
+    
+    server_stats[server_name]["total_collected"] += items_collected
+    server_stats[server_name]["total_flushed"] += items_flushed
+    server_stats[server_name]["last_update"] = datetime.now(KST)
+
+def update_collector_size(server_name, size):
+    """콜렉터 사이즈 갱신"""
+    global server_stats
+    if server_name in server_stats:
+        server_stats[server_name]["collector_size"] = size
+
+def update_db_stats(processed=0, queue_size=0, batch_size=0):
+    """데이터베이스 통계 정보 갱신"""
+    global db_stats
+    db_stats["processed"] += processed
+    db_stats["queue_size"] = queue_size
+    db_stats["batch_size"] = batch_size
+    now = datetime.now(KST)
+    
+    # 속도 계산 (1분 동안의 평균)
+    if (now - db_stats.get("last_calc_time", now - timedelta(minutes=1))).total_seconds() > 60:
+        # 1분마다 평균 속도 계산
+        time_diff = (now - db_stats.get("last_calc_time", now - timedelta(minutes=1))).total_seconds()
+        if time_diff > 0:
+            processed_diff = db_stats["processed"] - db_stats.get("last_processed", 0)
+            db_stats["rate"] = processed_diff / time_diff
+        db_stats["last_calc_time"] = now
+        db_stats["last_processed"] = db_stats["processed"]
+
+def display_stats_dashboard():
+    """통계 상황판 출력 (5초마다)"""
+    global last_dashboard_update, dashboard_update_interval
+    now = datetime.now(KST)
+    
+    # 지정된 간격마다만 상황판 업데이트
+    if (now - last_dashboard_update).total_seconds() < dashboard_update_interval:
+        return
+    
+    last_dashboard_update = now
+    
+    # 현재 시간 표시
+    time_str = now.strftime("%Y-%m-%d %H:%M:%S KST")
+    
+    # 출력할 상황판 문자열 생성
+    dashboard = f"\n{'-'*80}\n"
+    dashboard += f"[{time_str}] 데이터 수집 상황\n"
+    dashboard += f"{'-'*80}\n"
+    
+    # 서버별 통계
+    dashboard += "\n[서버별 통계]\n"
+    dashboard += "{:<10} {:<15} {:<15} {:<15}\n".format("서버", "수집된 항목", "저장된 항목", "현재 배치")
+    dashboard += "-" * 60 + "\n"
+    
+    for server, stats in server_stats.items():
+        dashboard += "{:<10} {:<15,d} {:<15,d} {:<15,d}\n".format(
+            server,
+            stats["total_collected"],
+            stats["total_flushed"],
+            stats["collector_size"]
+        )
+    
+    # DB 통계
+    dashboard += "\n[DB 통계]\n"
+    dashboard += f"\ud504로세스된 항목: {db_stats['processed']:,d}\n"
+    dashboard += f"큐 사이즈: {db_stats['queue_size']:,d}\n"
+    dashboard += f"최근 배치 크기: {db_stats['batch_size']:,d}\n"
+    dashboard += f"평균 처리 속도: {db_stats['rate']:.2f} 항목/초\n"
+    
+    dashboard += f"{'-'*80}\n"
+    
+    # 로그로 출력
+    logger.info(dashboard)
+
 # 배치 처리를 위한 데이터 수집기
 class DataCollector:
     """데이터를 배치로 모아서 큐를 통해 DB에 저장 (데드락 방지)"""
-    def __init__(self, batch_size=2000, div=1):
+    def __init__(self, batch_size=2000, div=1, server_name=None):
         self.batch = []
         self.batch_size = batch_size
         self.div = div
+        self.server_name = server_name  # 서버 이름 추가
         self.lock = threading.Lock()
         self.last_flush_time = datetime.now(KST)
         # 마지막 저장 시간 (최대 5분마다 자동 저장)
         self.max_save_interval = timedelta(minutes=5)
         # 처리된 출력용 통계
-        self.total_items_processed = 0
+        self.total_items_collected = 0
+        self.total_items_flushed = 0
+        
+        # 초기화 시 서버 통계 초기화
+        if self.server_name:
+            update_server_stats(self.server_name)
     
     def add_data(self, data):
         """데이터 추가, 배치 크기에 도달하면 자동 저장"""
         flush_needed = False
         current_time = datetime.now(KST)
         time_based_flush = False
+        items_count = len(data)
         
         with self.lock:
             self.batch.extend(data)
-            self.total_items_processed += len(data)
+            self.total_items_collected += items_count
+            
+            # 통계 갱신
+            if self.server_name:
+                update_server_stats(self.server_name, items_collected=items_count)
+                update_collector_size(self.server_name, len(self.batch))
+            
             # 배치 크기 기반 저장 조건
             if len(self.batch) >= self.batch_size:
                 flush_needed = True
@@ -747,7 +855,10 @@ class DataCollector:
             batch_size = len(self.batch)
             self.flush()
             if time_based_flush:
-                logger.info(f"시간 기반 자동 저장: {batch_size}개 항목 ({(current_time - self.last_flush_time).total_seconds():.0f}초 경과)")
+                logger.debug(f"시간 기반 자동 저장: {batch_size}개 항목 ({(current_time - self.last_flush_time).total_seconds():.0f}초 경과)")
+                
+        # 상황판 업데이트 (지정된 간격마다)
+        display_stats_dashboard()
     
     def flush(self):
         """현재 배치 데이터를 큐로 전송"""
@@ -758,6 +869,11 @@ class DataCollector:
                     batch_copy = self.batch.copy()
                     batch_size = len(batch_copy)
                     
+                    # 통계 갱신
+                    self.total_items_flushed += batch_size
+                    if self.server_name:
+                        update_server_stats(self.server_name, items_flushed=batch_size)
+                    
                     # 데이터를 큐에 넣어 DB 작업자가 처리하도록 함
                     # 이렇게 하면 데드락 방지 가능
                     insert_ranking_data(batch_copy, div=self.div)
@@ -766,9 +882,14 @@ class DataCollector:
                     self.batch = []
                     self.last_flush_time = datetime.now(KST)
                     
+                    # 서버 콜렉터 사이즈 갱신
+                    if self.server_name:
+                        update_collector_size(self.server_name, 0)
+                    
                     # 명시적 가비지 컬렉션으로 메모리 최적화
                     if batch_size > 500:
                         gc.collect()
+                        
                 except Exception as e:
                     logger.error(f"배치 데이터 큐 전송 중 오류: {e}")
                     # 오류 발생 시에도 시간 업데이트 (배치는 그대로 유지)
@@ -830,12 +951,20 @@ def sequential_rank_crawl_worker(server_num, div=1):
     try:
         driver = get_driver(high_performance=True)
         
-        # 데이터 수집기 초기화 (100만 건용 배치 크기 증가)
-        # 서버 이름을 전달하여 통계 만들기
-        collector = DataCollector(batch_size=2000, div=div, server_name=server_name)
-        
-        # 서버의 이름 가져오기
-        server_name = get_server_name(server_num)
+        try:
+            # 데이터 수집기 초기화 (100만 건용 배치 크기 증가)
+            # 서버 이름을 전달하여 통계 만들기 (오류 반환 시 로깅)
+            logger.info(f"서버 {server_num} ({server_name}) 순차 콜렉터 초기화 시작")
+            collector = DataCollector(batch_size=2000, div=div, server_name=server_name)
+            logger.info(f"서버 {server_name} 콜렉터 초기화 완료")
+        except Exception as e:
+            logger.error(f"서버 {server_num} 순차 크롤러 초기화 중 오류: {e}")
+            # 오류 발생 시 빈 콜렉터 생성
+            collector = DataCollector(batch_size=2000, div=div)
+            # 오류 구분을 위해 서버 이름 관련 정보 출력
+            logger.error(f"서버 이름: {server_name}, div: {div}, 서버 번호: {server_num}")
+            
+        # 이미 서버 이름을 가져왔기 때문에 다시 가져올 필요 없음
         
         # 서버별 캐릭터 목록 초기화
         with server_characters_lock:

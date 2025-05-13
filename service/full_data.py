@@ -191,6 +191,8 @@ def fetch_all_ranks(server=None, name=""):
 def parse_rank_html(html: str):
     soup = BeautifulSoup(html, 'html.parser')
     result = []
+    import logging
+    logger = logging.getLogger(__name__)
 
     # Check if the "no data" message is present
     no_data = soup.select_one("div.no_data")
@@ -202,9 +204,37 @@ def parse_rank_html(html: str):
         try:
             rank = li.select_one("div dl dt").text.strip()
             change_tag = li.select_one("div dl dd")
-            change = change_tag.text.strip()
-            change_type = "up" if "up" in change_tag.get("class", []) else "down"
-
+            change_text = change_tag.text.strip()
+            
+            # class에 'up' 또는 'down' 포함 여부로 변화 방향 결정
+            classes = change_tag.get("class", [])
+            
+            if "up" in classes:
+                change_type = "up"
+            elif "down" in classes:
+                change_type = "down"
+            else:
+                # 클래스가 없는 경우는 변화 없음 (new 또는 - 표시)
+                change_type = "none"
+            
+            # change 값 처리 개선 ('-' 처리 포함)
+            if change_text == "-" or change_text == "new":
+                change = "0"  # 변화 없음을 0으로 표시
+            else:
+                # 숫자만 추출
+                import re
+                num_match = re.search(r'\d+', change_text)
+                if num_match:
+                    change = num_match.group(0)
+                else:
+                    change = "0"  # 숫자가 없으면 0으로 설정
+            
+            # 변환된 숫자를 정수로 저장 (DB 저장 형식과 일치)
+            try:
+                change_int = int(change)
+            except ValueError:
+                change_int = 0
+                
             server = li.select("div dl")[1].select_one("dd").text.strip()
             character = li.select("div dl")[2].select_one("dd").get("data-charactername").strip()
             char_class = li.select("div dl")[3].select_one("dd").text.strip()
@@ -216,7 +246,7 @@ def parse_rank_html(html: str):
 
             result.append({
                 "rank": rank,
-                "change": change,
+                "change": change_int,  # 정수로 저장
                 "change_type": change_type,
                 "server": server,
                 "character": character,
