@@ -123,17 +123,34 @@ def background_update_task():
             time.sleep(60)
 
 def update_population_data():
-    """1시간마다 인구수 데이터를 업데이트하는 백그라운드 작업"""
+    """최신 인구수 데이터를 업데이트하는 백그라운드 작업
+    1시간 이내에 이미 업데이트한 이력이 있으면 갱신을 스킵합니다.
+    """
     from service.population import _population_cache
     
     while True:
         try:
-            # 인구수 데이터 갱신
+            # 현재 시간(KST) 가져오기
+            current_time = get_current_time()
+            
+            # 마지막 업데이트 시간 확인
+            last_updated = _population_cache.get("last_updated")
+            
+            # 1시간 이내 업데이트 이력이 있는지 확인
+            if last_updated and (current_time - last_updated).total_seconds() < 3600:
+                one_hour_ago = (current_time - timedelta(hours=1)).strftime('%Y-%m-%d %H:%M:%S KST')
+                print(f"[{current_time.strftime('%Y-%m-%d %H:%M:%S KST')}] 인구수 데이터가 최근({one_hour_ago} 이후) 업데이트되었으므로 스킵합니다.")
+                # 다음 업데이트 시간까지 대기
+                remaining_time = 3600 - (current_time - last_updated).total_seconds()
+                time.sleep(max(60, remaining_time))  # 최소 1분 이상 대기
+                continue
+            
+            # 1시간 이상 지났거나 처음 실행이면 데이터 갱신
+            print(f"[{current_time.strftime('%Y-%m-%d %H:%M:%S KST')}] 인구수 데이터 업데이트 시작...")
             population_data = get_all_server_populations()
             
             if population_data:
                 # 현재 시간(KST)
-                current_time = get_current_time()
                 timestamp = current_time.strftime('%Y-%m-%d %H:%M:%S KST')
                 
                 # 그래프 생성
@@ -148,9 +165,9 @@ def update_population_data():
                 _population_cache["last_updated"] = current_time
                 
                 print(f"[{current_time.strftime('%Y-%m-%d %H:%M:%S KST')}] 인구수 데이터 업데이트 완료")
-            
-            # 인구수 통계 수집 및 DB 저장
-            update_population_statistics()
+                
+                # 인구수 통계 수집 및 DB 저장
+                update_population_statistics()
             
             # 1시간 대기
             time.sleep(3600)  # 1시간 = 3600초
@@ -162,16 +179,34 @@ def update_population_data():
             time.sleep(600)
 
 def update_population_statistics_task():
-    """인구수 통계 데이터를 1시간마다 업데이트하는 백그라운드 작업"""
+    """인구수 통계 데이터를 1시간마다 업데이트하는 백그라운드 작업
+    1시간 이내에 이미 업데이트한 이력이 있으면 갱신을 스킵합니다.
+    """
+    # 마지막 업데이트 시간 추적
+    last_stats_update = None
+    
     while True:
         try:
             # 현재 시간(KST)
             current_time = get_current_time()
             
-            # 인구수 통계 데이터 업데이트
+            # 1시간 이내 업데이트 이력이 있는지 확인
+            if last_stats_update and (current_time - last_stats_update).total_seconds() < 3600:
+                one_hour_ago = (current_time - timedelta(hours=1)).strftime('%Y-%m-%d %H:%M:%S KST')
+                print(f"[{current_time.strftime('%Y-%m-%d %H:%M:%S KST')}] 인구수 통계 데이터가 최근({one_hour_ago} 이후) 업데이트되었으므로 스킵합니다.")
+                # 다음 업데이트 시간까지 대기
+                remaining_time = 3600 - (current_time - last_stats_update).total_seconds()
+                time.sleep(max(60, remaining_time))  # 최소 1분 이상 대기
+                continue
+            
+            # 1시간 이상 지났거나 처음 실행이면 데이터 갱신
+            print(f"[{current_time.strftime('%Y-%m-%d %H:%M:%S KST')}] 인구수 통계 데이터 업데이트 시작...")
             result = update_population_statistics()
+            
             if result:
                 print(f"[{current_time.strftime('%Y-%m-%d %H:%M:%S KST')}] 인구수 통계 데이터 업데이트 완료")
+                # 업데이트 시간 기록
+                last_stats_update = current_time
             else:
                 print(f"[{current_time.strftime('%Y-%m-%d %H:%M:%S KST')}] 인구수 통계 데이터 업데이트 실패")
                 
