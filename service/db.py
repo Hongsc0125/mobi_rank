@@ -102,13 +102,19 @@ def insert_data(data, server=None, character=None, div=1, retrieved_at_kst=None)
             
             # change 값 처리
             change_value = item['change']
-            if change_value == '-':
-                change_value = '0'
+            
+            # 타입 검사: 정수형인 경우 그대로 사용, 문자열인 경우 변환
+            if isinstance(change_value, int):
+                change_value_int = change_value
+            else:  # 문자열인 경우
+                if change_value == '-':
+                    change_value = '0'
+                # 쉼표 제거 후 정수 변환
+                change_value_int = int(change_value.replace(',', ''))
             
             # change_type이 'down'인 경우 음수로 변환 (랭킹이 내려간 경우)
-            change_value_int = int(change_value.replace(',', ''))
             if item['change_type'] == 'down':
-                change_value_int = -change_value_int  # 내려간 경우 음수로 표현
+                change_value_int = -abs(change_value_int)  # 내려간 경우 음수로 표현
             
             # Insert or update record with div parameter
             query = text("""
