@@ -115,6 +115,10 @@ db_queue = queue.Queue(maxsize=100000)  # 최대 10만 항목으로 제한
 db_worker_running = threading.Event()   # DB 작업자 쓰레드 상태
 db_worker_running.set()                 # 초기에는 작동 상태로 설정
 
+# DB 작업자 쓰레드 수 (3개로 설정)
+DB_WORKER_COUNT = 3
+db_worker_threads = []  # DB 작업자 쓰레드 목록
+
 # 크롤링 작업 통계 및 상황판 관리
 stats_lock = threading.Lock()          # 통계 데이터 락
 server_stats = {}                      # 서버별 통계 정보
@@ -506,13 +510,13 @@ def insert_ranking_data(data, div=1):
         return False
 
 
-def db_worker():
-    """데이터베이스 작업을 처리하는 단일 쓰레드
-    데드락 방지를 위해 모든 DB 작업을 하나의 쓰레드에서 처리
+def db_worker(worker_id):
+    """데이터베이스 작업을 처리하는 쓰레드
+    여러 쓰레드에서 DB 작업을 병렬로 처리하여 성능 향상
     """
-    thread_name = "DB작업자"
+    thread_name = f"DB작업자_{worker_id}"
     update_thread_status(thread_name, "시작됨")
-    logger.info("DB 작업자 쓰레드 시작")
+    logger.info(f"DB 작업자 쓰레드 #{worker_id} 시작")
     
     # 큐 처리 통계 변수
     total_processed = 0
@@ -594,7 +598,32 @@ def db_worker():
                         # 통계 갱신
                         total_processed += batch_size
                         update_db_stats(processed=batch_size, queue_size=queue_size, batch_size=batch_size)
-                        
+
+                        # 작업 히스토리 저장
+                        try:
+                            # 서버별로 캐릭터 이름 그룹화
+                            server_characters = {}
+                            for item in data_batch:
+                                server = item['server']
+                                character = item['character']
+                                if server not in server_characters:
+                                    server_characters[server] = []
+                                server_characters[server].append(character)
+                            
+                            # 서버별로 히스토리 저장
+                            for server, characters in server_characters.items():
+                                save_db_history(
+                                    db=db,  # 현재 트랜잭션에서 사용 중인 DB 세션 사용
+                                    operation_type="INSERT/UPDATE",
+                                    object_type="mabinogi_ranking",
+                                    object_id=server,
+                                    details=f"{div}분류 랭킹 저장 - {datetime.now(KST).strftime('%Y-%m-%d %H:%M:%S')}",
+                                    count=len(characters),
+                                    character_list=characters
+                                )
+                        except Exception as hist_error:
+                            logger.error(f"히스토리 저장 중 오류: {hist_error}")
+
                         # 성공 로그 (상황판으로 대체하고 최소한의 로그만 출력)
                         logger.debug(f"{batch_size}개 항목 일괄 저장 완료")
                         
@@ -659,7 +688,7 @@ def db_worker():
                 pass
                 
         update_thread_status(thread_name, "종료됨")
-        logger.info(f"DB 작업자 쓰레드 종료. 총 처리 항목: {total_processed}")
+        logger.info(f"DB 작업자 쓰레드 #{worker_id} 종료. 총 처리 항목: {total_processed}")
 
 
 def save_to_db_directly(data, div=1):
@@ -1172,14 +1201,28 @@ def sequential_rank_crawl_worker(server_num, div=1):
                 if not parsed_data:
                     logger.warning(f"서버 {server_name}, 캐릭터 '{current_char}'에서 데이터를 찾을 수 없음")
                     
-                    # 찾을 수 없는 캠릭터는 DB에서 삭제
+                    # 찾을 수 없는 캐릭터는 DB에서 삭제
                     try:
-                        # 캠릭터가 존재하지 않으므로 해당 캐릭터의 모든 랭킹 데이터(div) 삭제
+                        # 캐릭터가 존재하지 않으므로 해당 캐릭터의 모든 랭킹 데이터(div) 삭제
                         deleted_count = delete_character_data(server_name, current_char, div=None)
                         
                         if deleted_count > 0:
                             logger.info(f"서버 {server_name}, 캐릭터 '{current_char}' DB에서 삭제됨. 총 {deleted_count}개 레코드 삭제")
-                            
+        
+                            # 삭제 히스토리 기록
+                            try:
+                                save_db_history(
+                                    db=None,  # 새 세션 사용
+                                    operation_type="DELETE",
+                                    object_type="mabinogi_ranking",
+                                    object_id=server_name,
+                                    details=f"캐릭터 삭제 - {datetime.now(KST).strftime('%Y-%m-%d %H:%M:%S')}",
+                                    count=deleted_count,
+                                    character_list=[current_char]
+                                )
+                            except Exception as hist_error:
+                                logger.error(f"삭제 히스토리 저장 중 오류: {hist_error}")
+
                             # 삭제 후 서버 통계 업데이트 (매개변수 음수 값)
                             with collector.lock:
                                 collector.total_items_collected -= 1  # 통계용 1 감소
@@ -1434,16 +1477,75 @@ def thread_monitor():
         update_thread_status(thread_name, "모니터링 종료")
 
 
+
+def save_db_history(db, operation_type, object_type, object_id=None, details=None, count=None, character_list=None):
+    """DB 작업 내역을 히스토리 테이블에 저장
+    Args:
+        db: 데이터베이스 세션
+        operation_type: 작업 유형 (INSERT, UPDATE, DELETE)
+        object_type: 대상 객체 유형 (테이블명 등)
+        object_id: 대상 객체 ID (있는 경우)
+        details: 작업 상세 내용
+        count: 영향받은 레코드 수
+        character_list: 처리된 캐릭터 이름 리스트
+    """
+    current_time = datetime.now(KST)
+    
+    # 새 세션을 사용하여 트랜잭션 충돌 방지
+    own_db = False
+    if db is None:
+        db = SessionLocal()
+        own_db = True
+    
+    try:
+        query = text("""
+            INSERT INTO operation_history 
+            (operation_type, object_type, object_id, details, count, character_list, created_at)
+            VALUES (:operation_type, :object_type, :object_id, :details, :count, :character_list, :created_at)
+            RETURNING id
+        """)
+        
+        result = db.execute(query, {
+            'operation_type': operation_type,
+            'object_type': object_type,
+            'object_id': object_id,
+            'details': details,
+            'count': count,
+            'character_list': character_list,
+            'created_at': current_time
+        })
+        
+        if own_db:
+            db.commit()
+        
+        # 히스토리 ID 반환
+        for row in result:
+            return row[0]
+        return None
+    except Exception as e:
+        if own_db:
+            db.rollback()
+        logger.error(f"히스토리 저장 실패: {e}")
+        return None
+    finally:
+        if own_db:
+            db.close()
+
+
+
 if __name__ == "__main__":
     try:
         logger.info("===== 순차적 랭킹 크롤러 시작 =====")
         
-        # DB 작업자 쓰레드 시작 (데드락 방지용 단일 쓰레드)
-        db_worker_thread = threading.Thread(target=db_worker, name="DB작업자")
-        db_worker_thread.daemon = True
-        db_worker_thread.start()
-        active_threads.append(db_worker_thread)
-        logger.info("DB 작업자 쓰레드 시작됨 (데드락 방지)")
+        # DB 작업자 쓰레드 시작 (3개의 쓰레드로 성능 향상)
+        for i in range(DB_WORKER_COUNT):
+            db_worker_thread = threading.Thread(target=db_worker, args=(i,), name=f"DB작업자_{i}")
+            db_worker_thread.daemon = True
+            db_worker_thread.start()
+            db_worker_threads.append(db_worker_thread)
+            active_threads.append(db_worker_thread)
+            logger.info(f"DB 작업자 쓰레드 #{i} 시작됨")
+        logger.info(f"총 {DB_WORKER_COUNT}개의 DB 쓰레드가 병렬로 동작 중")
         
         # 랭킹 크롤링 시작
         start_sequential_rank_crawling()
@@ -1457,7 +1559,14 @@ if __name__ == "__main__":
     finally:
         # DB 작업자 쓰레드 종료 신호
         db_worker_running.clear()
-        logger.info("DB 작업자 종료 신호 전송, 남은 작업 처리 대기 중...")
+        logger.info(f"모든 DB 작업자 쓰레드({DB_WORKER_COUNT}개)에 종료 신호 전송, 남은 작업 처리 대기 중...")
+        
+        # DB 작업자 쓰레드가 모두 종료될 때까지 대기
+        for idx, thread in enumerate(db_worker_threads):
+            if thread.is_alive():
+                logger.info(f"DB 작업자 쓰레드 #{idx} 종료 대기 중...")
+                thread.join(timeout=5)
+        logger.info("모든 DB 작업자 쓰레드 종료됨")
         
         # 그 외 모든 리소스 정리
         shutdown_all()
