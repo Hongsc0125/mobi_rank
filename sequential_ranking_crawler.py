@@ -712,14 +712,28 @@ class DriverPool:
                     pass
             self.pool = []
 
+# DB 큐 및 안전한 크롤링을 위한 임계값 설정
+MAX_QUEUE_SIZE = 10000  # DB 큐 최대 크기 (이 이상이면 크롤링 일시 중단)
+MAX_COLLECTOR_SIZE = 5000  # 콜렉터 최대 크기 (이 이상이면 크롤링 일시 중단)
+PAUSE_DURATION = 10  # 크롤링 일시 중단 시간(초)
+SAFE_QUEUE_SIZE = 5000  # DB 큐 안전 크기 (이 이하면 크롤링 재개)
+SAFE_COLLECTOR_SIZE = 2000  # 콜렉터 안전 크기 (이 이하면 크롤링 재개)
+STATUS_CHECK_INTERVAL = 5  # 상태 확인 주기(초)
+
+# 크롤링 일시 정지 상태 저장용 이벤트 객체
+crawling_paused = {}
+
 # 서버별 통계 관리를 위한 변수
 server_stats = {}
+# DB 통계
 db_stats = {
     "processed": 0,
     "queue_size": 0,
-    "rate": 0,
+    "batch_size": 0,
+    "rate": 0.0,
+    "last_calc_time": datetime.now(KST),
     "last_processed": 0,
-    "batch_size": 0
+    "paused": False  # 전체 크롤링 일시 정지 여부
 }
 last_dashboard_update = datetime.now(KST)
 dashboard_update_interval = 5  # 초 단위
@@ -931,9 +945,65 @@ def get_character_list_for_server(server_name, div=1):
         # 오류 발생 시 기본 목록 반환
         return ["힝트"]
 
+def is_crawling_safe(server_name, collector_size):
+    """데이터베이스 큐 및 콜렉터 크기를 기반으로 크롤링 안전성을 확인합니다.
+    
+    Args:
+        server_name: 서버 이름
+        collector_size: 현재 콜렉터 크기
+        
+    Returns:
+        bool: 크롤링이 안전한지 여부
+    """
+    # 전체 크롤링 일시 중단 상태 확인
+    global db_stats
+    if db_stats.get("paused", False):
+        return False
+    
+    # DB 큐 크기 확인
+    queue_size = db_stats.get("queue_size", 0)
+    if queue_size > MAX_QUEUE_SIZE:
+        logger.warning(f"DB 큐 크기 임계값 초과: {queue_size} > {MAX_QUEUE_SIZE}, 전체 크롤링 일시 중단")
+        db_stats["paused"] = True
+        return False
+    
+    # 개별 서버 콜렉터 크기 확인
+    if collector_size > MAX_COLLECTOR_SIZE:
+        logger.warning(f"서버 {server_name} 콜렉터 크기 임계값 초과: {collector_size} > {MAX_COLLECTOR_SIZE}, 해당 서버 크롤링 일시 중단")
+        return False
+    
+    return True
+
+def is_safe_to_resume(server_name, collector_size):
+    """크롤링을 재개해도 안전한지 확인합니다.
+    
+    Args:
+        server_name: 서버 이름
+        collector_size: 현재 콜렉터 크기
+        
+    Returns:
+        bool: 크롤링 재개가 안전한지 여부
+    """
+    # 전체 크롤링 일시 중단 상태 확인
+    global db_stats
+    if db_stats.get("paused", False):
+        # DB 큐가 안전 수준 이하로 내려갔는지 확인
+        queue_size = db_stats.get("queue_size", 0)
+        if queue_size <= SAFE_QUEUE_SIZE:
+            logger.info(f"DB 큐 크기 안전 수준 도달: {queue_size} <= {SAFE_QUEUE_SIZE}, 크롤링 재개 가능")
+            db_stats["paused"] = False
+            return True
+        return False
+    
+    # 콜렉터 크기가 안전 수준 이하로 내려갔는지 확인
+    if collector_size <= SAFE_COLLECTOR_SIZE:
+        return True
+    
+    return False
+
 def sequential_rank_crawl_worker(server_num, div=1):
     """마지막 랭킹부터 1등까지 순차적으로 크롤링하는 워커 함수
-    캐릭터 이름 기반 검색 방식
+    캠릭터 이름 기반 검색 방식
     
     Args:
         server_num: 서버 번호
@@ -947,6 +1017,10 @@ def sequential_rank_crawl_worker(server_num, div=1):
     driver = None
     driver_restart_count = 0  # 드라이버 재시작 횟수 추적
     MAX_DRIVER_RESTARTS = 5   # 최대 드라이버 재시작 횟수
+    
+    # 크롤링 일시 중단 상태 관리
+    crawling_paused[server_name] = False
+    last_status_check = datetime.now(KST)
     
     try:
         driver = get_driver(high_performance=True)
@@ -973,6 +1047,46 @@ def sequential_rank_crawl_worker(server_num, div=1):
         
         while not shutdown_event.is_set():
             try:
+                # 현재 콜렉터 크기 확인
+                collector_size = 0
+                with collector.lock:
+                    collector_size = len(collector.batch)
+                
+                # 상태 확인 주기에 따라 DB 큐 및 콜렉터 크기 모니터링
+                current_time = datetime.now(KST)
+                if (current_time - last_status_check).total_seconds() >= STATUS_CHECK_INTERVAL:
+                    last_status_check = current_time
+                    
+                    # 크롤링 일시 중단 상태일 경우 재개 가능한지 확인
+                    if crawling_paused[server_name]:
+                        if is_safe_to_resume(server_name, collector_size):
+                            logger.info(f"서버 {server_name} 크롤링 재개: 콜렉터 크기={collector_size}, DB 큐 크기={db_stats.get('queue_size', 0)}")
+                            crawling_paused[server_name] = False
+                            update_thread_status(thread_name, f"크롤링 재개됨", f"서버 {server_name}, 가능 상태: 안전")
+                        else:
+                            # 아직 안전하지 않은 경우 잠시 대기 후 다시 확인
+                            logger.warning(f"서버 {server_name} 크롤링 계속 일시 중단: 콜렉터 크기={collector_size}, DB 큐 크기={db_stats.get('queue_size', 0)}")
+                            update_thread_status(thread_name, f"일시 중단 중", f"서버 {server_name}, 안전한 상태 대기 중")
+                            display_stats_dashboard()  # 현재 상태 표시
+                            time.sleep(PAUSE_DURATION)
+                            continue
+                    # 크롤링 중이면 안전한지 확인
+                    elif not is_crawling_safe(server_name, collector_size):
+                        logger.warning(f"서버 {server_name} 크롤링 일시 중단 시작: 콜렉터 크기={collector_size}, DB 큐 크기={db_stats.get('queue_size', 0)}")
+                        crawling_paused[server_name] = True
+                        update_thread_status(thread_name, f"일시 중단 시작", f"서버 {server_name}, 가능 상태: 위험")
+                        
+                        # 크롤링 중단 시 강제 배치 저장 수행
+                        collector.flush()
+                        display_stats_dashboard()  # 현재 상태 표시
+                        time.sleep(PAUSE_DURATION)
+                        continue
+                
+                # 크롤링이 일시 중단된 경우 처리
+                if crawling_paused[server_name]:
+                    time.sleep(PAUSE_DURATION)  # 대기 후 다시 상태 확인
+                    continue
+                
                 # 서버의 캐릭터 목록 확인
                 with server_characters_lock:
                     chars = server_characters[server_name]
@@ -1012,7 +1126,6 @@ def sequential_rank_crawl_worker(server_num, div=1):
                 else:
                     # 데이터 수집 (통계 갱신은 collector에서 처리, KST 시간 적용)
                     collector.add_data(parsed_data)
-                    # 로그 제거 - 상황판으로 대체
                 
                 # 일정 간격으로 수집기 비우기 (중복 제거 및 간격 조정)
                 if current_char_idx % 10 == 0:
