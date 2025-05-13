@@ -110,6 +110,10 @@ last_crawled_character_lock = threading.Lock()
 server_characters = {}
 server_characters_lock = threading.Lock()
 
+# 이미 처리된 캐릭터 추적을 위한 세트
+processed_characters = set()
+processed_characters_lock = threading.Lock()  # 캐릭터 세트 락
+
 # 데이터베이스 작업을 위한 큐 시스템
 db_queue = queue.Queue(maxsize=100000)  # 최대 10만 항목으로 제한
 db_worker_running = threading.Event()   # DB 작업자 쓰레드 상태
@@ -480,7 +484,7 @@ def insert_ranking_data(data, div=1):
                 if change_value == '-':
                     change_value = '0'
                 
-                # 데이터 딘셔너리로 준비
+                # 데이터 딕셔너리로 준비
                 processed_item = {
                     'rank': rank_position,
                     'change': int(change_value),
@@ -990,6 +994,11 @@ class DataCollector:
 def get_character_list_for_server(server_name, div=1):
     """서버에서 크롤링할 캐릭터 목록 가져오기 (마지막 랭킹부터 1등까지 정렬)"""
     try:
+        # DB에서 캐릭터 목록을 새로 가져올 때 처리된 캐릭터 세트 초기화
+        with processed_characters_lock:
+            processed_characters.clear()
+            logger.info(f"서버 {server_name} 캐릭터 목록 새로 조회, 처리된 캐릭터 세트 초기화")
+            
         db = SessionLocal()
         try:
             query = text("""
@@ -1180,9 +1189,24 @@ def sequential_rank_crawl_worker(server_num, div=1):
                     
                     # 현재 캐릭터 인덱스 저장
                     last_crawled_character_index[server_name] = current_char_idx
+                    
+                    # 1번 랭킹까지 크롤링 후 다시 처음으로 돌아가는 경우
+                    if current_char_idx == 0 and server_name in last_crawled_character_index:
+                        # 새로운 순환 시작 - 처리된 캐릭터 세트 초기화
+                        with processed_characters_lock:
+                            processed_characters.clear()
+                            logger.info(f"서버 {server_name} 전체 순환 완료, 처리된 캐릭터 세트 초기화")
                 
                 # 현재 처리할 캐릭터 이름 가져오기
                 current_char = chars[current_char_idx]
+                
+                # 이미 처리된 캐릭터인지 확인
+                character_key = f"{server_name}_{current_char}_{div}"
+                with processed_characters_lock:
+                    if character_key in processed_characters:
+                        # 이미 처리된 캐릭터는 스킵
+                        logger.debug(f"서버 {server_name}, 캐릭터 '{current_char}' 이미 처리됨, 크롤링 스킵")
+                        continue
                 
                 update_thread_status(thread_name, f"캐릭터 크롤링 중", f"서버 {server_name}, 캐릭터 {current_char} ({current_char_idx+1}/{total_chars})")
                 
@@ -1232,6 +1256,15 @@ def sequential_rank_crawl_worker(server_num, div=1):
                 else:
                     # 데이터 수집 (통계 갱신은 collector에서 처리, KST 시간 적용)
                     collector.add_data(parsed_data)
+                    
+                    # 처리된 캐릭터 등록 (parsed_data에 있는 모든 캐릭터)
+                    with processed_characters_lock:
+                        for item in parsed_data:
+                            char_key = f"{item['server']}_{item['character']}_{div}"
+                            processed_characters.add(char_key)
+                            
+                        # 현재 캐릭터도 추가 (여러 서버 대응)
+                        processed_characters.add(character_key)
                 
                 # 일정 간격으로 수집기 비우기 (중복 제거 및 간격 조정)
                 if current_char_idx % 10 == 0:
@@ -1351,6 +1384,11 @@ def start_sequential_rank_crawling():
     """모든 서버에 대해 순차적 랭킹 크롤링 시작"""
     try:
         logger.info("순차적 랭킹 크롤링 시작")
+        
+        # 처리된 캐릭터 세트 초기화
+        with processed_characters_lock:
+            processed_characters.clear()
+            logger.info("처리된 캐릭터 추적 세트 초기화")
         
         # 서버당 스레드 수를 1개로 고정
         threads_per_server = 1
