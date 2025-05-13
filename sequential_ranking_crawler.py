@@ -126,7 +126,10 @@ db_worker_threads = []  # DB 작업자 쓰레드 목록
 # 크롤링 작업 통계 및 상황판 관리
 stats_lock = threading.Lock()          # 통계 데이터 락
 server_stats = {}                      # 서버별 통계 정보
-db_stats = {                           # DB 저장 통계 정보
+server_rank_info = {}                  # 서버별 현재 처리 중인 랭킹 구간 정보
+
+# DB 저장 통계 정보
+db_stats = {
     'total_processed': 0,              # 총 처리된 항목 수
     'current_queue_size': 0,           # 현재 큐 크기
     'last_batch_size': 0,              # 마지막 배치 크기
@@ -147,6 +150,8 @@ def update_server_stats(server_name, items_collected=0, items_flushed=0):
                 'items_collected': 0,  # 수집된 항목 총계
                 'items_flushed': 0,   # 크롤러가 비운 항목 총계
                 'collector_size': 0,  # 수집기에 현재 들어있는 항목 수
+                'rank_range': "미정보",  # 현재 크롤링 중인 랭킹 구간
+                'current_character': "",  # 현재 처리 중인 캐릭터
                 'last_update': datetime.now(KST),  # 마지막 갱신 시간
             }
             
@@ -197,6 +202,7 @@ def display_stats_dashboard():
         
         # 서버별 통계 요약
         server_summary = ""
+        rank_info_summary = ""
         total_collected = 0
         total_collector_size = 0
         
@@ -204,10 +210,21 @@ def display_stats_dashboard():
             total_collected += stats['items_collected']
             current_collector_size = stats['items_collected'] - stats['items_flushed']
             total_collector_size += current_collector_size
-            server_summary += f"{server}: 수집={stats['items_collected']}, 배치사이즈={current_collector_size} | "
+            server_summary += f"{server}: 수집={stats['items_collected']}, 배치={current_collector_size} | "
+            
+            # 랭킹 구간 정보 추가
+            current_char = stats.get('current_character', '')
+            rank_range = stats.get('rank_range', '미정보')
+            if current_char:
+                rank_info_summary += f"{server}: [랭킹{rank_range}] '{current_char}' 처리중 | "
+            else:
+                rank_info_summary += f"{server}: [랭킹{rank_range}] | "
         
         if not server_summary:
             server_summary = "서버 데이터 없음"
+        
+        if not rank_info_summary:
+            rank_info_summary = "랭킹 정보 없음"
         
         # DB 저장 현황
         db_summary = f"DB저장: 총 {db_stats['total_processed']}개 처리, 큐사이즈: {db_stats['current_queue_size']}, 속도: {db_stats['processing_rate']:.1f}개/초"
@@ -216,7 +233,8 @@ def display_stats_dashboard():
         logger.info(f"===== 크롤링 상황판 ({time_str}, 총실행시간: {elapsed_str}) =====")
         logger.info(f"[1] 총계: 수집된 항목 {total_collected}개, 콜렉터 배치 총크기: {total_collector_size}개")
         logger.info(f"[2] {server_summary}")
-        logger.info(f"[3] {db_summary}")
+        logger.info(f"[3] 서버별 랭킹 정보: {rank_info_summary}")
+        logger.info(f"[4] {db_summary}")
         logger.info("=================================================")
         
         # 상황판 표시 시간 갱신
@@ -229,6 +247,16 @@ def update_collector_size(server_name, size):
     with stats_lock:
         if server_name in server_stats:
             server_stats[server_name]['collector_size'] = size
+            
+# 서버별 현재 크롤링 중인 랭킹 구간 정보 갱신
+def update_server_rank_info(server_name, rank_range, current_character=""):
+    """현재 서버에서 처리 중인 랭킹 구간 정보 갱신"""
+    global server_stats
+    with stats_lock:
+        if server_name in server_stats:
+            server_stats[server_name]['rank_range'] = rank_range
+            server_stats[server_name]['current_character'] = current_character
+            server_stats[server_name]['last_update'] = datetime.now(KST)
 
 # 최대 가져오기 재시도 횟수
 MAX_FETCH_RETRIES = 5  # 재시도 횟수 증가
@@ -428,7 +456,10 @@ def parse_rank_range(html: str):
 def parse_rank_html(html: str):
     soup = BeautifulSoup(html, 'html.parser')
     result = []
-
+    
+    # 랭킹 범위 추출 시도
+    rank_range = parse_rank_range(html)
+    
     no_data = soup.select_one("div.no_data")
     if no_data:
         return []
@@ -1210,6 +1241,11 @@ def sequential_rank_crawl_worker(server_num, div=1):
                 
                 update_thread_status(thread_name, f"캐릭터 크롤링 중", f"서버 {server_name}, 캐릭터 {current_char} ({current_char_idx+1}/{total_chars})")
                 
+                # 현재 처리 중인 캐릭터와 서버의 랭킹 구간 정보 갱신
+                # 랭킹 구간은 현재 랭킹이 없을 경우 단순 캐릭터 인덱스로 표시
+                rank_info = f"{current_char_idx+1}/{total_chars}"
+                update_server_rank_info(server_name, rank_info, current_char)
+                
                 # 캐릭터 이름으로 검색하여 데이터 가져오기
                 # API 호출에는 server_num을 사용
                 html, driver = fetch_rank_page(driver, server_num, current_char, div, high_performance_driver=True)
@@ -1218,6 +1254,12 @@ def sequential_rank_crawl_worker(server_num, div=1):
                     # 잠시 대기 후 다시 시도
                     time.sleep(5)
                     continue
+                
+                # 랭킹 범위 가져오기
+                rank_range = parse_rank_range(html)
+                if rank_range:
+                    # 랭킹 범위 정보 갱신
+                    update_server_rank_info(server_name, rank_range, current_char)
                 
                 # 랭킹 데이터 파싱
                 parsed_data = parse_rank_html(html)
