@@ -23,6 +23,10 @@ from concurrent.futures import ThreadPoolExecutor
 import random
 from selenium.common.exceptions import WebDriverException
 
+# DB 연결 모듈 가져오기
+from service.db_session import SessionLocal, get_current_time, KST
+from sqlalchemy import text
+
 # KST 타임존 설정
 import pytz
 KST = pytz.timezone('Asia/Seoul')
@@ -58,7 +62,7 @@ server_characters = {}
 server_characters_lock = threading.Lock()
 
 # 최대 가져오기 재시도 횟수
-MAX_FETCH_RETRIES = 3
+MAX_FETCH_RETRIES = 5  # 재시도 횟수 증가
 
 # 서버 이름 매핑
 SERVER_NAMES = {
@@ -167,13 +171,36 @@ def fetch_rank_page(driver, server_num, search_name="", div=1, high_performance_
     
     attempts = 0
     last_exception = None
+    driver_recreated = False
     
     while attempts < MAX_FETCH_RETRIES:
         try:
-            # 이미 리스트 페이지에 있지 않은 경우에만 페이지 이동
-            if not driver.current_url.startswith(list_url):
-                driver.get(list_url)
-                time.sleep(2) # 페이지 로드 대기
+            # 드라이버 상태 확인 (연결 확인)
+            try:
+                # 이미 리스트 페이지에 있지 않은 경우에만 페이지 이동
+                if not driver.current_url.startswith(list_url):
+                    driver.get(list_url)
+                    time.sleep(2) # 페이지 로드 대기
+            except Exception as e:
+                # 드라이버 연결 문제 발생 시 드라이버 재생성
+                if not driver_recreated:  # 한 번만 재생성 시도
+                    logger.warning(f"드라이버 연결 오류 감지, 드라이버 재생성 시도: {str(e)[:100]}...")
+                    try:
+                        # 기존 드라이버 종료 시도 (이미 종료되었을 수 있음)
+                        try:
+                            driver.quit()
+                        except:
+                            pass
+                            
+                        # 새 드라이버 생성
+                        driver = get_driver(high_performance=high_performance_driver)
+                        driver.get(list_url)
+                        time.sleep(3)  # 새 드라이버 로드에 더 많은 시간 부여
+                        driver_recreated = True
+                        continue  # 드라이버 재생성 후 다시 시도
+                    except Exception as recreate_error:
+                        logger.error(f"드라이버 재생성 실패: {recreate_error}")
+                        raise  # 재생성도 실패하면 다음 예외 처리로 이동
 
             # 세션 가져오기
             sess = requests.Session()
@@ -271,15 +298,56 @@ def parse_rank_html(html: str):
 
 def insert_ranking_data(data, div=1):
     """랭킹 데이터를 DB에 저장"""
+    db = SessionLocal()
     try:
-        from service.db import insert_data
-        now_kst = datetime.now(KST)
-        insert_data(data, server=None, character=None, div=div, retrieved_at_kst=now_kst)
-        # 로그 제거
+        # 현재 KST 시간 가져오기
+        current_time_kst = get_current_time()
+        
+        for item in data:
+            # 콤마가 포함된 문자열을 숫자로 변환
+            rank_position = int(item['rank'].replace(',', '').replace('위', ''))
+            power_value = int(item['power'].replace(',', ''))
+            
+            # change 값이 '-'인 경우 0으로 처리
+            change_value = item['change']
+            if change_value == '-':
+                change_value = '0'
+            
+            # 레코드 추가 또는 업데이트 (div 매개변수 포함)
+            query = text("""
+                INSERT INTO mabinogi_ranking 
+                (rank_position, change_amount, change_type, server_name, character_name, class_name, power_value, div, retrieved_at)
+                VALUES (:rank, :change, :change_type, :server, :character, :class, :power, :div, :retrieved_at_val AT TIME ZONE 'Asia/Seoul')
+                ON CONFLICT (character_name, server_name, div) 
+                DO UPDATE SET 
+                    rank_position = :rank,
+                    change_amount = :change,
+                    change_type = :change_type,
+                    class_name = :class,
+                    power_value = :power,
+                    retrieved_at = :retrieved_at_val AT TIME ZONE 'Asia/Seoul'
+            """)
+            
+            db.execute(query, {
+                'rank': rank_position,
+                'change': int(change_value),
+                'change_type': item['change_type'],
+                'server': item['server'],
+                'character': item['character'],
+                'class': item['class'],
+                'power': power_value,
+                'div': div,
+                'retrieved_at_val': current_time_kst
+            })
+        
+        db.commit()
         return True
     except Exception as e:
-        logger.error(f"데이터 저장 중 오류: {e}", exc_info=True)
+        db.rollback()
+        logger.error(f"데이터 저장 중 오류: {e}")
         return False
+    finally:
+        db.close()
 
 # 드라이버 풀 관리자 클래스
 class DriverPool:
@@ -390,30 +458,32 @@ class DataCollector:
 def get_character_list_for_server(server_name, div=1):
     """서버에서 크롤링할 캐릭터 목록 가져오기 (마지막 랭킹부터 1등까지 정렬)"""
     try:
-        with get_db_connection() as conn:
-            with conn.cursor() as cursor:
-                query = """
-                WITH ranked_chars AS (
-                    SELECT character_name, rank_position, 
-                           ROW_NUMBER() OVER (PARTITION BY character_name ORDER BY retrieved_at DESC) as rn
-                    FROM mabinogi_ranking 
-                    WHERE server_name = %s AND div = %s
-                )
-                SELECT character_name 
-                FROM ranked_chars 
-                WHERE rn = 1 AND character_name != '알수없음'
-                ORDER BY rank_position DESC
-                """
-                cursor.execute(query, (server_name, div))
-                characters = [row[0] for row in cursor.fetchall()]
+        db = SessionLocal()
+        try:
+            query = text("""
+            WITH ranked_chars AS (
+                SELECT character_name, rank_position, 
+                       ROW_NUMBER() OVER (PARTITION BY character_name ORDER BY retrieved_at DESC) as rn
+                FROM mabinogi_ranking 
+                WHERE server_name = :server_name AND div = :div
+            )
+            SELECT character_name 
+            FROM ranked_chars 
+            WHERE rn = 1 AND character_name != '알수없음'
+            ORDER BY rank_position DESC
+            """)
+            
+            result = db.execute(query, {"server_name": server_name, "div": div})
+            characters = [row[0] for row in result.fetchall()]
+            
+            if not characters:
+                logger.warning(f"서버 {server_name}에서 크롤링할 캐릭터를 찾을 수 없음. 기본 캐릭터 사용.")
+                return ["힝트"]
                 
-                if not characters:
-                    logger.warning(f"서버 {server_name}에서 크롤링할 캐릭터를 찾을 수 없음. 기본 캐릭터 사용.")
-
-                    return ["힝트"]
-                    
-                logger.info(f"서버 {server_name}에서 {len(characters)}개의 캐릭터를 마지막 랭킹부터 크롤링할 예정")
-                return characters
+            logger.info(f"서버 {server_name}에서 {len(characters)}개의 캐릭터를 마지막 랭킹부터 크롤링할 예정")
+            return characters
+        finally:
+            db.close()
                 
     except Exception as e:
         logger.error(f"캐릭터 목록 가져오기 실패: {e}", exc_info=True)
@@ -434,6 +504,9 @@ def sequential_rank_crawl_worker(server_num, div=1):
     
     # 드라이버 준비
     driver = None
+    driver_restart_count = 0  # 드라이버 재시작 횟수 추적
+    MAX_DRIVER_RESTARTS = 5   # 최대 드라이버 재시작 횟수
+    
     try:
         driver = get_driver(high_performance=True)
         
@@ -499,9 +572,52 @@ def sequential_rank_crawl_worker(server_num, div=1):
                 time.sleep(1)
                 
             except Exception as e:
-                logger.error(f"서버 {server_num} 순차 크롤링 중 오류: {e}", exc_info=True)
-                # 오류 발생 시 잠시 대기 후 계속
-                time.sleep(10)
+                error_str = str(e)
+                logger.error(f"서버 {server_num} 순차 크롤링 중 오류: {error_str[:100]}...", exc_info=True)
+                
+                # 드라이버 연결 관련 오류인지 확인
+                connection_errors = [
+                    "HTTPConnectionPool", "Max retries exceeded",
+                    "NewConnectionError", "Failed to establish a new connection",
+                    "ConnectionRefusedError", "Connection refused",
+                    "WebDriverException", "chrome not reachable",
+                    "StaleElementReferenceException"
+                ]
+                
+                is_connection_error = any(err in error_str for err in connection_errors)
+                
+                if is_connection_error and driver_restart_count < MAX_DRIVER_RESTARTS:
+                    # 드라이버 재시작 로직
+                    driver_restart_count += 1
+                    logger.warning(f"드라이버 연결 오류 발생, 재시작 시도 {driver_restart_count}/{MAX_DRIVER_RESTARTS}")
+                    
+                    try:
+                        # 기존 드라이버 정리
+                        if driver:
+                            try:
+                                driver.quit()
+                            except:
+                                pass
+                        
+                        # 메모리 정리 및 가비지 컬렉션
+                        gc.collect()
+                        
+                        # 새 드라이버 생성 전 잠시 대기 (시스템 리소스 정리 시간)
+                        time.sleep(5)
+                        
+                        # 새 드라이버 생성
+                        driver = get_driver(high_performance=True)
+                        logger.info(f"서버 {server_name} 워커의 드라이버 재생성 성공")
+                        
+                        # 드라이버 재시작 성공 후 잠시 대기
+                        time.sleep(2)
+                    except Exception as restart_error:
+                        logger.error(f"드라이버 재시작 실패: {restart_error}")
+                else:
+                    # 일반 오류 또는 최대 재시작 횟수 초과 시 대기 후 계속
+                    wait_time = 10 + (driver_restart_count * 5)  # 재시작 횟수에 따라 대기 시간 증가
+                    logger.warning(f"오류 후 {wait_time}초 대기 후 계속")
+                    time.sleep(wait_time)
     
     except Exception as e:
         logger.error(f"서버 {server_num} 순차 크롤러 초기화 중 오류: {e}", exc_info=True)

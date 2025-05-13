@@ -3,3 +3,6 @@
 *.pyc
 images
 __pycache__
+*.log
+*.json
+*.lock
