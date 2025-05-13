@@ -67,6 +67,113 @@ db_queue = queue.Queue(maxsize=100000)  # 최대 10만 항목으로 제한
 db_worker_running = threading.Event()   # DB 작업자 쓰레드 상태
 db_worker_running.set()                 # 초기에는 작동 상태로 설정
 
+# 크롤링 작업 통계 및 상황판 관리
+stats_lock = threading.Lock()          # 통계 데이터 락
+server_stats = {}                      # 서버별 통계 정보
+db_stats = {                           # DB 저장 통계 정보
+    'total_processed': 0,              # 총 처리된 항목 수
+    'current_queue_size': 0,           # 현재 큐 크기
+    'last_batch_size': 0,              # 마지막 배치 크기
+    'processing_rate': 0,              # 처리 속도 (초당)
+    'start_time': datetime.now(KST),   # 시작 시간
+    'last_update': datetime.now(KST),  # 마지막 업데이트 시간
+}
+stats_display_interval = 5  # 상황판 표시 간격(초)
+last_stats_display = datetime.now(KST)  # 마지막 상황판 표시 시간
+
+# 서버별 통계 갱신 함수
+def update_server_stats(server_name, items_collected=0, items_flushed=0):
+    """서버별 통계 정보 갱신"""
+    global server_stats
+    with stats_lock:
+        if server_name not in server_stats:
+            server_stats[server_name] = {
+                'items_collected': 0,  # 수집된 항목 총계
+                'items_flushed': 0,   # 크롤러가 비운 항목 총계
+                'collector_size': 0,  # 수집기에 현재 들어있는 항목 수
+                'last_update': datetime.now(KST),  # 마지막 갱신 시간
+            }
+            
+        server_stats[server_name]['items_collected'] += items_collected
+        server_stats[server_name]['items_flushed'] += items_flushed
+        server_stats[server_name]['last_update'] = datetime.now(KST)
+
+# DB 통계 갱신 함수
+def update_db_stats(processed=0, queue_size=0, batch_size=0):
+    """데이터베이스 작업 통계 갱신"""
+    global db_stats
+    with stats_lock:
+        current_time = datetime.now(KST)
+        
+        # 총 처리된 항목 수 갱신
+        db_stats['total_processed'] += processed
+        
+        # 현재 큐 크기 갱신
+        db_stats['current_queue_size'] = queue_size
+        
+        # 마지막 배치 크기 갱신
+        if batch_size > 0:
+            db_stats['last_batch_size'] = batch_size
+        
+        # 처리 속도 계산 (시간당 항목 수)
+        elapsed = (current_time - db_stats['start_time']).total_seconds()
+        if elapsed > 0:
+            db_stats['processing_rate'] = db_stats['total_processed'] / elapsed
+            
+        # 마지막 업데이트 시간 갱신
+        db_stats['last_update'] = current_time
+
+# 상황판 표시 함수
+def display_stats_dashboard():
+    """수집 및 DB 저장 현황을 통합하여 표시"""
+    global last_stats_display
+    current_time = datetime.now(KST)
+    
+    # 상황판 표시 간격 확인
+    if (current_time - last_stats_display).total_seconds() < stats_display_interval:
+        return
+        
+    with stats_lock:
+        # 현재 시간 표시
+        time_str = current_time.strftime("%Y-%m-%d %H:%M:%S")
+        elapsed = (current_time - db_stats['start_time']).total_seconds()
+        elapsed_str = f"{int(elapsed//3600):02d}:{int((elapsed%3600)//60):02d}:{int(elapsed%60):02d}"
+        
+        # 서버별 통계 요약
+        server_summary = ""
+        total_collected = 0
+        total_collector_size = 0
+        
+        for server, stats in sorted(server_stats.items()):
+            total_collected += stats['items_collected']
+            current_collector_size = stats['items_collected'] - stats['items_flushed']
+            total_collector_size += current_collector_size
+            server_summary += f"{server}: 수집={stats['items_collected']}, 배치사이즈={current_collector_size} | "
+        
+        if not server_summary:
+            server_summary = "서버 데이터 없음"
+        
+        # DB 저장 현황
+        db_summary = f"DB저장: 총 {db_stats['total_processed']}개 처리, 큐사이즈: {db_stats['current_queue_size']}, 속도: {db_stats['processing_rate']:.1f}개/초"
+        
+        # 종합 요약
+        logger.info(f"===== 크롤링 상황판 ({time_str}, 총실행시간: {elapsed_str}) =====")
+        logger.info(f"[1] 총계: 수집된 항목 {total_collected}개, 콜렉터 배치 총크기: {total_collector_size}개")
+        logger.info(f"[2] {server_summary}")
+        logger.info(f"[3] {db_summary}")
+        logger.info("=================================================")
+        
+        # 상황판 표시 시간 갱신
+        last_stats_display = current_time
+
+# 서버별 콜렉터 사이즈 업데이트 함수
+def update_collector_size(server_name, size):
+    """현재 콜렉터에 저장된 항목 수 갱신"""
+    global server_stats
+    with stats_lock:
+        if server_name in server_stats:
+            server_stats[server_name]['collector_size'] = size
+
 # 최대 가져오기 재시도 횟수
 MAX_FETCH_RETRIES = 5  # 재시도 횟수 증가
 
@@ -438,7 +545,10 @@ def db_worker():
                         
                         # 통계 갱신
                         total_processed += batch_size
-                        logger.info(f"{batch_size}개 항목 일괄 저장 완료")
+                        update_db_stats(processed=batch_size, queue_size=queue_size, batch_size=batch_size)
+                        
+                        # 성공 로그 (상황판으로 대체하고 최소한의 로그만 출력)
+                        logger.debug(f"{batch_size}개 항목 일괄 저장 완료")
                         
                     except Exception as e:
                         # 오류 발생
@@ -473,12 +583,13 @@ def db_worker():
                 # 작업 완료 표시
                 db_queue.task_done()
                 
-                # 10초마다 통계 정보 출력
+                # 상황판 표시 (각 배치 처리 후)  
+                display_stats_dashboard()
+                
+                # 30초마다 로그에 간단한 통계 정보 출력 (상황판이 기본이며 이것은 사용하지 않음)
                 now = datetime.now(KST)
-                if (now - last_report_time).total_seconds() > 10:
-                    elapsed = (now - batch_start_time).total_seconds()
-                    rate = total_processed / elapsed if elapsed > 0 else 0
-                    logger.info(f"DB 저장 현황: 총 {total_processed}개 항목, 현재 큐 사이즈: {queue_size}, 속도: {rate:.1f}개/초")
+                if (now - last_report_time).total_seconds() > 30:
+                    # 추가 로그 출력 없음
                     last_report_time = now
                     
                 # 작업 간 짧은 휴식 (시스템 부하 방지)
@@ -715,7 +826,8 @@ def sequential_rank_crawl_worker(server_num, div=1):
         driver = get_driver(high_performance=True)
         
         # 데이터 수집기 초기화 (100만 건용 배치 크기 증가)
-        collector = DataCollector(batch_size=2000, div=div)
+        # 서버 이름을 전달하여 통계 만들기
+        collector = DataCollector(batch_size=2000, div=div, server_name=server_name)
         
         # 서버의 이름 가져오기
         server_name = get_server_name(server_num)
@@ -764,13 +876,16 @@ def sequential_rank_crawl_worker(server_num, div=1):
                 if not parsed_data:
                     logger.warning(f"서버 {server_name}, 캐릭터 '{current_char}'에서 데이터를 찾을 수 없음")
                 else:
-                    # 데이터 저장 (KST 시간 적용)
+                    # 데이터 수집 (통계 갱신은 collector에서 처리, KST 시간 적용)
                     collector.add_data(parsed_data)
-                    logger.info(f"[SRV{server_name}] 캐릭터 '{current_char}', {len(parsed_data)}개 저장")
+                    # 로그 제거 - 상황판으로 대체
                 
                 # 일정 간격으로 수집기 비우기 (중복 제거 및 간격 조정)
                 if current_char_idx % 10 == 0:
+                    # 배치 저장
                     collector.flush()
+                    # 상황판 갱신
+                    display_stats_dashboard()
                 
                 # 과부하 방지 대기
                 time.sleep(1)
