@@ -28,15 +28,20 @@ import pytz
 KST = pytz.timezone('Asia/Seoul')
 
 # 로깅 설정
-logger = logging.getLogger("순차랭킹크롤러")
+logger = logging.getLogger("순차크롤러")
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    format='%(asctime)s [%(levelname)s] %(message)s',  # 간단한 형식으로 변경
     handlers=[
         logging.StreamHandler(),
         logging.FileHandler('sequential_crawler.log')
     ]
 )
+
+# 기본 로그 레벨을 WARNING으로 설정 (중요한 로그만 표시)
+logging.getLogger().setLevel(logging.WARNING)
+# 순차크롤러 로그는 INFO 레벨 유지
+logger.setLevel(logging.INFO)
 
 # 전역 변수들
 shutdown_event = threading.Event()  # 종료 이벤트
@@ -73,7 +78,7 @@ signal.signal(signal.SIGINT, signal_handler)   # Ctrl+C
 signal.signal(signal.SIGTERM, signal_handler)  # kill 명령어
 
 def update_thread_status(thread_name, status, details=None):
-    """쓰레드 상태 업데이트 및 로깅"""
+    """쓰레드 상태 업데이트 및 로깅 (최소한의 로그만 출력)"""
     with thread_status_lock:
         timestamp = datetime.now(KST).strftime("%H:%M:%S")
         thread_status[thread_name] = {
@@ -81,25 +86,23 @@ def update_thread_status(thread_name, status, details=None):
             'details': details,
             'updated_at': timestamp
         }
-        if details:
-            logger.info(f"[{thread_name}] {status}: {details}")
-        else:
-            logger.info(f"[{thread_name}] {status}")
+        # 상태 변경시에만 간결한 로그 출력 (최소로 유지)
+        if status in ['시작됨', '종료됨', '오류 발생']:
+            if details:
+                logger.info(f"[{thread_name}] {status}: {details}")
+            else:
+                logger.info(f"[{thread_name}] {status}")
 
 def log_all_thread_status():
-    """모든 쓰레드의 현재 상태 로깅"""
+    """모든 쓰레드의 현재 상태 로깅 (요약 형태로 줄이기)"""
     with thread_status_lock:
         if not thread_status:
-            logger.info("활성 쓰레드 없음")
             return
             
-        logger.info("===== 쓰레드 상태 요약 =====")
-        for thread_name, status_info in thread_status.items():
-            status = status_info['status']
-            details = status_info.get('details', '')
-            updated_at = status_info.get('updated_at', '')
-            logger.info(f"{thread_name}: {status} {details} (갱신: {updated_at})")
-        logger.info("===========================")
+        # 활성 쓰레드수만 간단하게 출력
+        active_count = sum(1 for info in thread_status.values() if info['status'] not in ['종료됨'])
+        total_count = len(thread_status)
+        logger.info(f"[STAT] {active_count}/{total_count} 쓰레드 운영중")
 
 def shutdown_all():
     """모든 쓰레드 및 리소스 종료"""
@@ -303,7 +306,7 @@ def get_max_rank_position(server_num):
                 max_rank = row[0]
                 # 페이지당 20개 항목, 올림으로 계산
                 max_page = (max_rank + 19) // 20
-                logger.info(f"서버 {server_num}({server_name})의 최대 랭킹: {max_rank}, 최대 페이지: {max_page}")
+                # logger.info(f"서버 {server_num}({server_name})의 최대 랭킹: {max_rank}, 최대 페이지: {max_page}")
                 return max_rank, max_page
             
             # 데이터가 없으면 기본값 반환
@@ -323,7 +326,7 @@ def insert_ranking_data(data, div=1):
         from service.db import insert_data
         now_kst = datetime.now(KST)
         insert_data(data, server=None, character=None, div=div, retrieved_at_kst=now_kst)
-        logger.info(f"{len(data)}개 항목 저장 완료")
+        # 로그 제거
         return True
     except Exception as e:
         logger.error(f"데이터 저장 중 오류: {e}", exc_info=True)
@@ -454,10 +457,8 @@ def sequential_rank_crawl_worker(server_num, div=1):
                     time.sleep(5)
                     continue
                 
-                # 랭킹 범위 파싱 및 로깅
+                # 랭킹 범위 파싱
                 range_text = parse_rank_range(html)
-                if range_text:
-                    logger.info(f"서버 {server_num}, 페이지 {current_page}, 범위: {range_text}")
                 
                 # 랭킹 데이터 파싱
                 parsed_data = parse_rank_html(html)
@@ -468,7 +469,9 @@ def sequential_rank_crawl_worker(server_num, div=1):
                     # 데이터 저장 (KST 시간 적용)
                     collector.add_data(parsed_data)
                     
-                    logger.info(f"서버 {server_num}, 페이지 {current_page}에서 {len(parsed_data)}개 항목 처리됨")
+                    # 10번째 페이지마다만 로그 출력
+                    if current_page % 10 == 0:
+                        logger.info(f"[SRV{server_num}] 페이지 {current_page}, {len(parsed_data)}개 저장")
                 
                 # 처리 완료된 페이지 위치 저장
                 with last_crawled_position_lock:
@@ -533,19 +536,19 @@ def start_sequential_rank_crawling():
         monitor_thread.daemon = True
         monitor_thread.start()
         active_threads.append(monitor_thread)
-        
+
         # 메인 쓰레드는 종료 이벤트 대기
         try:
             while not shutdown_event.is_set():
-                # 1분마다 상태 로깅
+                # 5분마다 상태 로깅 (비번도 줄임)
                 now = datetime.now(KST)
-                if now.second < 10:
+                if now.minute % 5 == 0 and now.second < 10:
                     log_all_thread_status()
                 time.sleep(1)
         except KeyboardInterrupt:
             logger.info("키보드 인터럽트 감지, 종료 중...")
             shutdown_event.set()
-        
+
         # 모든 쓰레드 종료 대기
         for thread in active_threads:
             if thread.is_alive():
