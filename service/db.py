@@ -225,23 +225,86 @@ def get_980_data(server_name):
     """Get characters beyond rank 980 for exploration"""
     db = SessionLocal()
     try:
-        time_threshold = get_current_time() - timedelta(minutes=20) # Use KST
         query = text("""
-            SELECT character_name FROM mabinogi_ranking
-            WHERE server_name = :server_name 
-            AND rank_position > 980
-            AND retrieved_at < :time_threshold
-            ORDER BY rank_position DESC
+            SELECT server_name, character_name, MAX(retrieved_at) as last_seen
+            FROM mabinogi_ranking
+            WHERE server_name = :server
+            AND rank_value > 980
+            GROUP BY server_name, character_name
+            ORDER BY server_name, last_seen DESC
+            LIMIT 10000
         """)
-        params = {'server_name': server_name, 'time_threshold': time_threshold}
         
-        # Add this log to check the parameters
-        logging.info(f"Executing query with params: {params}")
+        rows = db.execute(query, {'server': server_name}).fetchall()
         
-        results = db.execute(query, params).fetchall()
-        return results
+        # Convert to list of dicts
+        result = []
+        for row in rows:
+            result.append({
+                'server_name': row[0],
+                'character_name': row[1],
+                'last_seen': row[2].strftime('%Y-%m-%d %H:%M:%S') if row[2] else 'Never'
+            })
+            
+        return result
+    finally:
+        db.close()
+
+def delete_character_data(server, character, div=None):
+    """
+    DB에서 캐릭터 데이터를 삭제합니다.
+    찾을 수 없는 캐릭터를 DB에서 완전히 제거하기 위해 사용됩니다.
+    
+    Args:
+        server: 서버 이름
+        character: 캐릭터 이름
+        div: 랭킹 구분 (None인 경우 모든 div 삭제)
+        
+    Returns:
+        int: 삭제된 레코드 수
+    """
+    db = SessionLocal()
+    try:
+        # 현재 KST 시간 기록 (삭제 시점)
+        current_time = get_current_time()
+        
+        # div 지정 여부에 따라 쿼리 구성
+        if div is not None:
+            query = text("""
+                DELETE FROM mabinogi_ranking
+                WHERE server_name = :server
+                AND character_name = :character
+                AND div = :div
+                RETURNING 1
+            """)
+            params = {'server': server, 'character': character, 'div': div}
+        else:
+            # 모든 div 데이터 삭제
+            query = text("""
+                DELETE FROM mabinogi_ranking
+                WHERE server_name = :server 
+                AND character_name = :character
+                RETURNING 1
+            """)
+            params = {'server': server, 'character': character}
+            
+        # 쿼리 실행 및 삭제된 레코드 수 카운트
+        result = db.execute(query, params)
+        deleted_count = len(result.fetchall())
+        
+        # 변경사항 커밋
+        db.commit()
+        
+        # 로그 기록
+        if deleted_count > 0:
+            logger.info(f"삭제 완료: 서버={server}, 캐릭터={character}, DIV={div if div else 'ALL'}, 삭제 레코드={deleted_count}개, 시간={current_time}")
+        
+        return deleted_count
+    
     except Exception as e:
-        # logger.error(f"Error getting 980+ data: {e}")
-        return []
+        db.rollback()  # 오류 발생 시 롤백
+        logger.error(f"캐릭터 삭제 중 오류 발생: {e}")
+        raise
+    
     finally:
         db.close()

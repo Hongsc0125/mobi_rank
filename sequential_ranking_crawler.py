@@ -25,6 +25,7 @@ from selenium.common.exceptions import WebDriverException
 import queue
 
 # DB 연결 모듈 가져오기
+from service.db import insert_data, get_980_data, delete_character_data
 from service.db_session import SessionLocal, get_current_time, KST
 from sqlalchemy import text
 
@@ -47,6 +48,53 @@ logging.basicConfig(
 logging.getLogger().setLevel(logging.WARNING)
 # 순차크롤러 로그는 INFO 레벨 유지
 logger.setLevel(logging.INFO)
+
+# 시스템 리소스 제한 설정
+MAX_CPU_PERCENT = 70.0  # CPU 사용량 최대 70%
+MAX_MEMORY_PERCENT = 70.0  # 메모리 사용량 최대 70%
+RESOURCE_CHECK_INTERVAL = 5  # 리소스 확인 주기(초)
+THROTTLE_DELAY = 0.5  # 리소스 사용량이 높을 때 추가 디레이(초)
+
+# 리소스 사용량 상태 저장
+resource_usage_stats = {
+    "cpu_percent": 0.0,
+    "memory_percent": 0.0,
+    "last_check_time": datetime.now(KST),
+    "throttling": False
+}
+
+def check_system_resources():
+    """
+    현재 시스템의 CPU와 메모리 사용량을 확인하고 사용량이 높은지 확인합니다.
+    
+    Returns:
+        bool: 리소스 사용량이 안전한지 여부 (True: 안전, False: 과부하)
+    """
+    global resource_usage_stats
+    
+    # 현재 CPU 사용량 (모든 코어의 평균)
+    cpu_percent = psutil.cpu_percent(interval=0.1)
+    
+    # 현재 메모리 사용량
+    memory_info = psutil.virtual_memory()
+    memory_percent = memory_info.percent
+    
+    # 리소스 사용량 업데이트
+    resource_usage_stats["cpu_percent"] = cpu_percent
+    resource_usage_stats["memory_percent"] = memory_percent
+    resource_usage_stats["last_check_time"] = datetime.now(KST)
+    
+    # CPU 또는 메모리 사용량이 임계치를 초과하는지 확인
+    if cpu_percent > MAX_CPU_PERCENT or memory_percent > MAX_MEMORY_PERCENT:
+        if not resource_usage_stats["throttling"]:
+            resource_usage_stats["throttling"] = True
+            logger.warning(f"시스템 리소스 과부하 감지: CPU {cpu_percent:.1f}%, 메모리 {memory_percent:.1f}%, 크롤링 속도 제한 시작")
+        return False
+    else:
+        if resource_usage_stats["throttling"]:
+            resource_usage_stats["throttling"] = False
+            logger.info(f"시스템 리소스 상태 정상화: CPU {cpu_percent:.1f}%, 메모리 {memory_percent:.1f}%, 크롤링 속도 제한 해제")
+        return True
 
 # 전역 변수들
 shutdown_event = threading.Event()  # 종료 이벤트
@@ -1123,6 +1171,21 @@ def sequential_rank_crawl_worker(server_num, div=1):
                 
                 if not parsed_data:
                     logger.warning(f"서버 {server_name}, 캐릭터 '{current_char}'에서 데이터를 찾을 수 없음")
+                    
+                    # 찾을 수 없는 캠릭터는 DB에서 삭제
+                    try:
+                        # 캠릭터가 존재하지 않으므로 해당 캐릭터의 모든 랭킹 데이터(div) 삭제
+                        deleted_count = delete_character_data(server_name, current_char, div=None)
+                        
+                        if deleted_count > 0:
+                            logger.info(f"서버 {server_name}, 캐릭터 '{current_char}' DB에서 삭제됨. 총 {deleted_count}개 레코드 삭제")
+                            
+                            # 삭제 후 서버 통계 업데이트 (매개변수 음수 값)
+                            with collector.lock:
+                                collector.total_items_collected -= 1  # 통계용 1 감소
+                            
+                    except Exception as e:
+                        logger.error(f"서버 {server_name}, 캠릭터 '{current_char}' 삭제 중 오류 발생: {e}")
                 else:
                     # 데이터 수집 (통계 갱신은 collector에서 처리, KST 시간 적용)
                     collector.add_data(parsed_data)
@@ -1134,8 +1197,39 @@ def sequential_rank_crawl_worker(server_num, div=1):
                     # 상황판 갱신
                     display_stats_dashboard()
                 
-                # 과부하 방지 대기
-                time.sleep(1)
+                # 시스템 리소스 사용량 확인 및 과부하 방지
+                current_time = datetime.now(KST)
+                if (current_time - resource_usage_stats["last_check_time"]).total_seconds() >= RESOURCE_CHECK_INTERVAL:
+                    # 시스템 리소스 사용량 확인
+                    resources_safe = check_system_resources()
+                    
+                    # 리소스 사용량이 높은 경우 상태 업데이트
+                    if not resources_safe:
+                        update_thread_status(thread_name, "리소스 제한 중", 
+                                             f"CPU: {resource_usage_stats['cpu_percent']:.1f}%, 메모리: {resource_usage_stats['memory_percent']:.1f}%")
+                        
+                        # 리소스 사용량이 너무 높은 경우 추가 강제 배치 저장 수행
+                        if resource_usage_stats['cpu_percent'] > MAX_CPU_PERCENT + 10 or \
+                           resource_usage_stats['memory_percent'] > MAX_MEMORY_PERCENT + 10:
+                            # 심각한 과부하인 경우 배치 저장
+                            if len(collector.batch) > 0:
+                                logger.warning(
+                                    f"심각한 리소스 과부하: CPU {resource_usage_stats['cpu_percent']:.1f}%, "
+                                    f"메모리 {resource_usage_stats['memory_percent']:.1f}%, 배치 강제 저장 후 디레이 적용")
+                                collector.flush()  # 강제 배치 저장
+                                time.sleep(THROTTLE_DELAY * 4)  # 더 긴 디레이
+                                continue
+                            time.sleep(THROTTLE_DELAY * 2)  # 더 긴 디레이
+                        else:
+                            # 준위한 경우 기본 스로틀링
+                            time.sleep(THROTTLE_DELAY)
+                
+                # 기본 대기 시간 (과부하 방지)
+                # 스로틀링 중이 아닌 경우에도 기본 대기 시간 적용
+                if resource_usage_stats["throttling"]:
+                    time.sleep(THROTTLE_DELAY)  # 스로틀링 중일 때 추가 디레이
+                else:
+                    time.sleep(0.5)  # 일반 대기 시간 약간 감소
                 
             except Exception as e:
                 error_str = str(e)
