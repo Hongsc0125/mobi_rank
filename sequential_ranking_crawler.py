@@ -22,6 +22,7 @@ import gc
 from concurrent.futures import ThreadPoolExecutor
 import random
 from selenium.common.exceptions import WebDriverException
+import queue
 
 # DB 연결 모듈 가져오기
 from service.db_session import SessionLocal, get_current_time, KST
@@ -60,6 +61,11 @@ last_crawled_character_lock = threading.Lock()
 # 서버별 처리할 캐릭터 목록
 server_characters = {}
 server_characters_lock = threading.Lock()
+
+# 데이터베이스 작업을 위한 큐 시스템
+db_queue = queue.Queue(maxsize=100000)  # 최대 10만 항목으로 제한
+db_worker_running = threading.Event()   # DB 작업자 쓰레드 상태
+db_worker_running.set()                 # 초기에는 작동 상태로 설정
 
 # 최대 가져오기 재시도 횟수
 MAX_FETCH_RETRIES = 5  # 재시도 횟수 증가
@@ -297,7 +303,210 @@ def parse_rank_html(html: str):
 
 
 def insert_ranking_data(data, div=1):
-    """랭킹 데이터를 DB에 저장"""
+    """랭킹 데이터를 큐에 넣어 데드락 방지"""
+    try:
+        # 현재 KST 시간 가져오기
+        current_time_kst = get_current_time()
+        
+        # 데이터를 전처리하여 큐에 추가
+        processed_data = []
+        for item in data:
+            try:
+                # 콤마가 포함된 문자열을 숫자로 변환
+                rank_position = int(item['rank'].replace(',', '').replace('위', ''))
+                power_value = int(item['power'].replace(',', ''))
+                
+                # change 값이 '-'인 경우 0으로 처리
+                change_value = item['change']
+                if change_value == '-':
+                    change_value = '0'
+                
+                # 데이터 딘셔너리로 준비
+                processed_item = {
+                    'rank': rank_position,
+                    'change': int(change_value),
+                    'change_type': item['change_type'],
+                    'server': item['server'],
+                    'character': item['character'],
+                    'class': item['class'],
+                    'power': power_value,
+                    'div': div,
+                    'retrieved_at_val': current_time_kst
+                }
+                processed_data.append(processed_item)
+            except Exception as item_error:
+                logger.warning(f"데이터 전처리 중 항목 오류, 무시함: {item_error}")
+                continue
+        
+        # 처리된 데이터가 있으면 큐에 추가
+        if processed_data:
+            # 마무리된 데이터만 큐에 추가
+            db_queue.put((processed_data, div))
+            return True
+        else:
+            return False
+            
+    except Exception as e:
+        logger.error(f"데이터 큐 처리 중 오류: {e}")
+        return False
+
+
+def db_worker():
+    """데이터베이스 작업을 처리하는 단일 쓰레드
+    데드락 방지를 위해 모든 DB 작업을 하나의 쓰레드에서 처리
+    """
+    thread_name = "DB작업자"
+    update_thread_status(thread_name, "시작됨")
+    logger.info("DB 작업자 쓰레드 시작")
+    
+    # 큐 처리 통계 변수
+    total_processed = 0
+    last_report_time = datetime.now(KST)
+    batch_start_time = datetime.now(KST)
+    
+    # 데이터베이스 연결 객체 - 단일 연결 재사용
+    db = None
+    db_reconnect_time = datetime.now(KST)
+    db_check_interval = timedelta(minutes=10)  # 10분마다 연결 재검사
+    
+    try:
+        # 최초 한 번만 DB 연결 생성
+        db = SessionLocal()
+        
+        while db_worker_running.is_set() and not shutdown_event.is_set():
+            try:
+                # DB 연결상태 10분마다 점검
+                current_time = datetime.now(KST)
+                if (current_time - db_reconnect_time) > db_check_interval:
+                    # 기존 연결 정리 및 새 연결 생성
+                    try:
+                        if db:
+                            db.close()
+                    except Exception:
+                        pass
+                    
+                    # 새 연결 생성
+                    db = SessionLocal()
+                    db_reconnect_time = current_time
+                    logger.info("DB 연결 새로 생성 (주기적 갱신)")
+                    
+                # 큐에서 데이터 가져오기 (1초 타임아웃)
+                try:
+                    data_batch, div = db_queue.get(timeout=1)
+                except queue.Empty:
+                    # 큐가 비었을 때는 계속 체크
+                    continue
+                
+                # 현재 큐 상태 로깅
+                queue_size = db_queue.qsize()
+                if queue_size > 1000:
+                    logger.warning(f"DB 큐 사이즈 경고: {queue_size} 항목")
+                
+                # 데이터 처리 시도
+                retry_count = 0
+                max_retries = 3
+                success = False
+                batch_size = len(data_batch)
+                
+                while retry_count < max_retries and not success:
+                    try:
+                        # 트랜잭션 시작
+                        if not db.in_transaction():
+                            db.begin()
+                        
+                        # 각 데이터 항목에 대해 DB 작업 수행
+                        for item in data_batch:
+                            query = text("""
+                                INSERT INTO mabinogi_ranking 
+                                (rank_position, change_amount, change_type, server_name, character_name, class_name, power_value, div, retrieved_at)
+                                VALUES (:rank, :change, :change_type, :server, :character, :class, :power, :div, :retrieved_at_val AT TIME ZONE 'Asia/Seoul')
+                                ON CONFLICT (character_name, server_name, div) 
+                                DO UPDATE SET 
+                                    rank_position = :rank,
+                                    change_amount = :change,
+                                    change_type = :change_type,
+                                    class_name = :class,
+                                    power_value = :power,
+                                    retrieved_at = :retrieved_at_val AT TIME ZONE 'Asia/Seoul'
+                            """)
+                            
+                            db.execute(query, item)
+                        
+                        # 트랜잭션 커밋
+                        db.commit()
+                        success = True
+                        
+                        # 통계 갱신
+                        total_processed += batch_size
+                        logger.info(f"{batch_size}개 항목 일괄 저장 완료")
+                        
+                    except Exception as e:
+                        # 오류 발생
+                        retry_count += 1
+                        logger.error(f"DB 처리 중 오류 (시도 {retry_count}/{max_retries}): {e}")
+                        
+                        try:
+                            # 트랜잭션 롤백
+                            db.rollback()
+                        except Exception:
+                            pass
+                        
+                        # 연결 문제가 의심되면 연결 재생성
+                        if "QueuePool limit" in str(e) or "connection" in str(e).lower():
+                            try:
+                                if db:
+                                    db.close()
+                            except Exception:
+                                pass
+                                
+                            # 연결 재생성 전 잠시 대기
+                            time.sleep(2)
+                            db = SessionLocal()
+                            db_reconnect_time = datetime.now(KST)
+                            logger.info("DB 연결 재생성 완료 (오류 후 재연결)")
+                        
+                        if retry_count < max_retries:
+                            # 재시도 전 대기 시간 (지수 백오프)
+                            sleep_time = 2 ** retry_count
+                            time.sleep(sleep_time)
+                
+                # 작업 완료 표시
+                db_queue.task_done()
+                
+                # 10초마다 통계 정보 출력
+                now = datetime.now(KST)
+                if (now - last_report_time).total_seconds() > 10:
+                    elapsed = (now - batch_start_time).total_seconds()
+                    rate = total_processed / elapsed if elapsed > 0 else 0
+                    logger.info(f"DB 저장 현황: 총 {total_processed}개 항목, 현재 큐 사이즈: {queue_size}, 속도: {rate:.1f}개/초")
+                    last_report_time = now
+                    
+                # 작업 간 짧은 휴식 (시스템 부하 방지)
+                time.sleep(0.01)
+                
+            except Exception as e:
+                logger.error(f"DB 작업자 오류: {e}", exc_info=True)
+                time.sleep(1)  # 오류 발생 시 잠시 대기
+    
+    except Exception as e:
+        logger.error(f"DB 작업자 쓰레드 중단 오류: {e}", exc_info=True)
+    finally:
+        # 마무리 작업
+        if db:
+            try:
+                db.close()
+                logger.info("DB 연결 종료")
+            except Exception:
+                pass
+                
+        update_thread_status(thread_name, "종료됨")
+        logger.info(f"DB 작업자 쓰레드 종료. 총 처리 항목: {total_processed}")
+
+
+def save_to_db_directly(data, div=1):
+    """로깅 등 특별한 경우 직접 DB에 저장
+    주의: 데드락 발생 가능성이 있으니 데이터브레이커 모듈과 같이 필수적인 경우만 사용
+    """
     db = SessionLocal()
     try:
         # 현재 KST 시간 가져오기
@@ -389,15 +598,17 @@ class DriverPool:
 
 # 배치 처리를 위한 데이터 수집기
 class DataCollector:
-    """데이터를 배치로 모아서 DB에 일괄 저장"""
-    def __init__(self, batch_size=1000, div=1):
+    """데이터를 배치로 모아서 큐를 통해 DB에 저장 (데드락 방지)"""
+    def __init__(self, batch_size=2000, div=1):
         self.batch = []
         self.batch_size = batch_size
         self.div = div
         self.lock = threading.Lock()
         self.last_flush_time = datetime.now(KST)
-        # 마지막 DB 저장 시간 (최대 5분마다 자동 저장)
+        # 마지막 저장 시간 (최대 5분마다 자동 저장)
         self.max_save_interval = timedelta(minutes=5)
+        # 처리된 출력용 통계
+        self.total_items_processed = 0
     
     def add_data(self, data):
         """데이터 추가, 배치 크기에 도달하면 자동 저장"""
@@ -407,6 +618,7 @@ class DataCollector:
         
         with self.lock:
             self.batch.extend(data)
+            self.total_items_processed += len(data)
             # 배치 크기 기반 저장 조건
             if len(self.batch) >= self.batch_size:
                 flush_needed = True
@@ -422,37 +634,29 @@ class DataCollector:
                 logger.info(f"시간 기반 자동 저장: {batch_size}개 항목 ({(current_time - self.last_flush_time).total_seconds():.0f}초 경과)")
     
     def flush(self):
-        """현재 배치 데이터 저장"""
+        """현재 배치 데이터를 큐로 전송"""
         with self.lock:
             if self.batch:
-                retry_count = 0
-                max_retries = 3
-                batch_copy = self.batch.copy()  # 배치 데이터 복사 (안전한 재시도를 위해)
-                batch_size = len(batch_copy)
-                
-                while retry_count < max_retries:
-                    try:
-                        insert_ranking_data(batch_copy, div=self.div)
-                        logger.info(f"{batch_size}개 항목 일괄 저장 완료")
-                        # 성공 시 배치 초기화 및 마지막 저장 시간 갱신
-                        self.batch = []
-                        self.last_flush_time = datetime.now(KST)
-                        # 명시적 가비지 컬렉션으로 메모리 최적화
-                        if batch_size > 500:
-                            gc.collect()
-                        break
-                    except Exception as e:
-                        retry_count += 1
-                        logger.error(f"배치 데이터 저장 중 오류 (시도 {retry_count}/{max_retries}): {e}")
-                        if retry_count < max_retries:
-                            # 지수 백오프로 재시도 간격 증가 (1초, 2초, 4초...)
-                            sleep_time = 2 ** (retry_count - 1)
-                            time.sleep(sleep_time)
-                        else:
-                            logger.critical(f"배치 데이터 저장 실패: {batch_size}개 항목 - {e}")
-                            # 최대 재시도 실패 시 배치 초기화 (데이터 손실은 있지만 프로세스 계속 진행)
-                            self.batch = []
-                            self.last_flush_time = datetime.now(KST)
+                try:
+                    # 배치 데이터 복사 (안전한 처리를 위해)
+                    batch_copy = self.batch.copy()
+                    batch_size = len(batch_copy)
+                    
+                    # 데이터를 큐에 넣어 DB 작업자가 처리하도록 함
+                    # 이렇게 하면 데드락 방지 가능
+                    insert_ranking_data(batch_copy, div=self.div)
+                    
+                    # 성공 시 배치 초기화 및 마지막 저장 시간 갱신
+                    self.batch = []
+                    self.last_flush_time = datetime.now(KST)
+                    
+                    # 명시적 가비지 컬렉션으로 메모리 최적화
+                    if batch_size > 500:
+                        gc.collect()
+                except Exception as e:
+                    logger.error(f"배치 데이터 큐 전송 중 오류: {e}")
+                    # 오류 발생 시에도 시간 업데이트 (배치는 그대로 유지)
+                    self.last_flush_time = datetime.now(KST)
 
 
 def get_character_list_for_server(server_name, div=1):
@@ -777,10 +981,27 @@ def thread_monitor():
 if __name__ == "__main__":
     try:
         logger.info("===== 순차적 랭킹 크롤러 시작 =====")
+        
+        # DB 작업자 쓰레드 시작 (데드락 방지용 단일 쓰레드)
+        db_worker_thread = threading.Thread(target=db_worker, name="DB작업자")
+        db_worker_thread.daemon = True
+        db_worker_thread.start()
+        active_threads.append(db_worker_thread)
+        logger.info("DB 작업자 쓰레드 시작됨 (데드락 방지)")
+        
+        # 랭킹 크롤링 시작
         start_sequential_rank_crawling()
+        
+        # 메인 쓰레드는 다른 작업을 할 수 있도록 계속 실행
+        while not shutdown_event.is_set():
+            time.sleep(1)
+            
     except KeyboardInterrupt:
-        logger.info("사용자에 의해 크롤링 중단됨")
-        shutdown_all()
-    except Exception as e:
-        logger.error(f"크롤링 중 오류 발생: {str(e)}", exc_info=True)
+        logger.info("Ctrl+C로 종료 시도")
+    finally:
+        # DB 작업자 쓰레드 종료 신호
+        db_worker_running.clear()
+        logger.info("DB 작업자 종료 신호 전송, 남은 작업 처리 대기 중...")
+        
+        # 그 외 모든 리소스 정리
         shutdown_all()
