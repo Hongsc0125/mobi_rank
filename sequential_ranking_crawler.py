@@ -628,10 +628,15 @@ def save_to_db_directly(data, div=1):
             rank_position = int(item['rank'].replace(',', '').replace('위', ''))
             power_value = int(item['power'].replace(',', ''))
             
-            # change 값이 '-'인 경우 0으로 처리
+            # change 값 처리
             change_value = item['change']
             if change_value == '-':
                 change_value = '0'
+                
+            # change_type이 'down'인 경우 음수로 변환 (랭킹이 내려간 경우)
+            change_value_int = int(change_value.replace(',', ''))
+            if item['change_type'] == 'down':
+                change_value_int = -change_value_int  # 내려간 경우 음수로 표현
             
             # 레코드 추가 또는 업데이트 (div 매개변수 포함)
             query = text("""
@@ -650,7 +655,7 @@ def save_to_db_directly(data, div=1):
             
             db.execute(query, {
                 'rank': rank_position,
-                'change': int(change_value),
+                'change': change_value_int,  # 음수/양수로 변환된 change 값 사용
                 'change_type': item['change_type'],
                 'server': item['server'],
                 'character': item['character'],
