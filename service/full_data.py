@@ -8,6 +8,7 @@ from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
 import logging
+from service.driver_pool import get_driver_pool
 
 class SuppressChromedriverMessage(logging.Filter):
     def filter(self, record):
@@ -45,9 +46,12 @@ def fetch_rank_via_requests(server=None, name="", rank_type=1):
     s = switch_server(server_name=server)
     driver = None
     
+    # 드라이버 풀에서 드라이버 가져오기
+    pool = get_driver_pool()
+    
     try:
-        # 드라이버 생성 및 URL 접속
-        driver = get_driver()
+        # 드라이버 풀에서 드라이버 얻기
+        driver = pool.get_driver()
         driver.set_page_load_timeout(30)  # 페이지 로드 타임아웃 설정
         driver.get(list_url)
         time.sleep(2)
@@ -83,16 +87,9 @@ def fetch_rank_via_requests(server=None, name="", rank_type=1):
         raise
     
     finally:
-        # 드라이버 정리 보장
+        # 드라이버를 풀에 반환
         if driver:
-            try:
-                # 모든 윈도우 닫기
-                driver.execute_script("window.close();")
-                # 드라이버 종료
-                driver.quit()
-            except Exception as e:
-                logging.warning(f"드라이버 종료 중 오류: {str(e)}")
-                # 오류가 발생해도 계속 진행
+            pool.release_driver(driver)
 
 def switch_server(server_name):
     server_map = {

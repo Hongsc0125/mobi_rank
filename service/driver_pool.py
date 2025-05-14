@@ -1,0 +1,193 @@
+import threading
+import time
+import logging
+import queue
+from selenium import webdriver
+from selenium.webdriver.chrome.service import Service
+from selenium.webdriver.chrome.options import Options
+import chromedriver_autoinstaller
+from service.db_session import get_current_time
+from datetime import timedelta
+
+# 로그 설정
+logger = logging.getLogger(__name__)
+
+class ChromeDriverPool:
+    """
+    크롬 드라이버 풀 관리 클래스
+    - 3개의 드라이버를 상시 유지
+    - 요청시 사용 가능한 드라이버 반환
+    - 사용 후 풀에 다시 반환
+    - 주기적으로 드라이버 상태 체크 및 재생성
+    """
+    def __init__(self, pool_size=3):
+        self.pool_size = pool_size
+        self.drivers = []  # 사용 가능한 드라이버 리스트
+        self.in_use = {}   # 사용 중인 드라이버 {드라이버: 마지막 사용 시간}
+        self.lock = threading.RLock()  # 쓰레드 안전을 위한 락
+        self.driver_queue = queue.Queue(maxsize=pool_size)  # 드라이버 큐
+        self.initialize_drivers()
+        
+        # 상태 체크 스레드 시작
+        self.check_thread = threading.Thread(target=self._health_check, daemon=True)
+        self.check_thread.name = "chrome-driver-health-check"
+        self.check_thread.start()
+        
+    def initialize_drivers(self):
+        """초기 드라이버 풀 생성"""
+        logger.info(f"[{get_current_time().strftime('%Y-%m-%d %H:%M:%S KST')}] 크롬 드라이버 풀({self.pool_size}개) 초기화 시작")
+        with self.lock:
+            # 새 드라이버 생성
+            for _ in range(self.pool_size):
+                try:
+                    driver = self._create_new_driver()
+                    self.driver_queue.put(driver)
+                    logger.info(f"[{get_current_time().strftime('%Y-%m-%d %H:%M:%S KST')}] 드라이버 생성 완료")
+                except Exception as e:
+                    logger.error(f"[{get_current_time().strftime('%Y-%m-%d %H:%M:%S KST')}] 드라이버 생성 실패: {e}")
+        
+        logger.info(f"[{get_current_time().strftime('%Y-%m-%d %H:%M:%S KST')}] 크롬 드라이버 풀 초기화 완료")
+    
+    def _create_new_driver(self):
+        """새 크롬 드라이버 인스턴스 생성"""
+        chromedriver_autoinstaller.install()
+
+        opts = Options()
+        opts.add_argument("--headless=new")
+        opts.add_argument("--no-sandbox")
+        opts.add_argument("--disable-dev-shm-usage")
+        opts.add_argument("--disable-gpu")
+        opts.add_argument("window-size=1200,800")
+        # 브라우저 프로세스 고아(orphaned) 방지
+        opts.add_argument("--disable-features=site-per-process")
+        opts.add_experimental_option("detach", False)
+        opts.add_experimental_option("excludeSwitches", ["enable-logging"])
+        
+        # 서비스 타임아웃 증가
+        service = Service()
+        service.service_args = ['--verbose', '--log-path=chromedriver.log']
+        
+        return webdriver.Chrome(service=service, options=opts)
+    
+    def get_driver(self, timeout=30):
+        """사용 가능한 드라이버 가져오기"""
+        try:
+            # 대기열에서 드라이버 가져오기 (타임아웃 설정)
+            driver = self.driver_queue.get(block=True, timeout=timeout)
+            
+            # 드라이버가 정상 작동하는지 확인
+            if not self._is_driver_alive(driver):
+                logger.warning(f"[{get_current_time().strftime('%Y-%m-%d %H:%M:%S KST')}] 비정상 드라이버 감지, 새 드라이버 생성")
+                try:
+                    self._quit_driver(driver)
+                except:
+                    pass
+                driver = self._create_new_driver()
+            
+            # 사용 중 목록에 추가
+            with self.lock:
+                self.in_use[driver] = get_current_time()
+                
+            return driver
+        except queue.Empty:
+            logger.error(f"[{get_current_time().strftime('%Y-%m-%d %H:%M:%S KST')}] 드라이버 풀 타임아웃: 사용 가능한 드라이버 없음")
+            # 긴급 새 드라이버 생성
+            return self._create_new_driver()
+    
+    def release_driver(self, driver):
+        """드라이버 풀에 반환"""
+        with self.lock:
+            # 사용 중 목록에서 제거
+            if driver in self.in_use:
+                del self.in_use[driver]
+                
+            # 드라이버가 정상인지 확인
+            if self._is_driver_alive(driver):
+                # 큐에 다시 넣기
+                try:
+                    # 이미 꽉 차 있으면 큐에 넣지 않고 종료
+                    if self.driver_queue.qsize() < self.pool_size:
+                        self.driver_queue.put_nowait(driver)
+                    else:
+                        self._quit_driver(driver)
+                except queue.Full:
+                    self._quit_driver(driver)
+            else:
+                # 비정상 드라이버는 종료하고 새로 생성해서 추가
+                self._quit_driver(driver)
+                try:
+                    new_driver = self._create_new_driver()
+                    self.driver_queue.put_nowait(new_driver)
+                except:
+                    logger.error(f"[{get_current_time().strftime('%Y-%m-%d %H:%M:%S KST')}] 대체 드라이버 생성 실패")
+    
+    def _is_driver_alive(self, driver):
+        """드라이버가 정상 작동하는지 체크"""
+        try:
+            # 간단한 명령 실행으로 상태 확인
+            driver.current_url
+            return True
+        except:
+            return False
+    
+    def _quit_driver(self, driver):
+        """드라이버 안전하게 종료"""
+        try:
+            driver.execute_script("window.close();")
+            driver.quit()
+        except Exception as e:
+            logger.warning(f"[{get_current_time().strftime('%Y-%m-%d %H:%M:%S KST')}] 드라이버 종료 오류: {e}")
+    
+    def _health_check(self):
+        """정기적으로 드라이버 상태 체크 및 필요시 재생성"""
+        while True:
+            try:
+                time.sleep(60)  # 1분마다 체크
+                logger.info(f"[{get_current_time().strftime('%Y-%m-%d %H:%M:%S KST')}] 크롬 드라이버 상태 체크 시작")
+                
+                with self.lock:
+                    # 사용 중인 드라이버 체크
+                    current_time = get_current_time()
+                    
+                    # 30분 이상 사용 중인 드라이버는 종료 예약
+                    stale_drivers = []
+                    for driver, last_used in self.in_use.items():
+                        if current_time - last_used > timedelta(minutes=30):
+                            logger.warning(f"[{current_time.strftime('%Y-%m-%d %H:%M:%S KST')}] 오래된 드라이버 감지 (30분 이상 사용)")
+                            stale_drivers.append(driver)
+                    
+                    # 오래된 드라이버 정리
+                    for driver in stale_drivers:
+                        if driver in self.in_use:
+                            del self.in_use[driver]
+                        self._quit_driver(driver)
+                    
+                    # 사용 가능한 드라이버 수 확인
+                    available_count = self.driver_queue.qsize()
+                    
+                    # 부족한 드라이버 생성
+                    if available_count < self.pool_size:
+                        logger.info(f"[{current_time.strftime('%Y-%m-%d %H:%M:%S KST')}] 사용 가능한 드라이버: {available_count}/{self.pool_size}, 추가 생성 시작")
+                        for _ in range(self.pool_size - available_count):
+                            try:
+                                driver = self._create_new_driver()
+                                self.driver_queue.put_nowait(driver)
+                                logger.info(f"[{current_time.strftime('%Y-%m-%d %H:%M:%S KST')}] 추가 드라이버 생성 완료")
+                            except Exception as e:
+                                logger.error(f"[{current_time.strftime('%Y-%m-%d %H:%M:%S KST')}] 추가 드라이버 생성 실패: {e}")
+                                break
+                            
+                logger.info(f"[{get_current_time().strftime('%Y-%m-%d %H:%M:%S KST')}] 크롬 드라이버 상태 체크 완료, 사용 가능: {self.driver_queue.qsize()}")
+                
+            except Exception as e:
+                logger.error(f"[{get_current_time().strftime('%Y-%m-%d %H:%M:%S KST')}] 드라이버 상태 체크 오류: {e}")
+
+# 싱글톤 인스턴스
+_driver_pool = None
+
+def get_driver_pool():
+    """드라이버 풀 싱글톤 인스턴스 반환"""
+    global _driver_pool
+    if _driver_pool is None:
+        _driver_pool = ChromeDriverPool(pool_size=3)
+    return _driver_pool

@@ -221,22 +221,27 @@ def update_population_statistics_task():
 
 def start_background_tasks():
     """Start all background tasks in separate threads"""
+    # 크롬 드라이버 풀 초기화
+    from service.driver_pool import get_driver_pool
+    driver_pool = get_driver_pool()  # 3개의 크롬 드라이버를 상시 유지하는 풀 초기화
+    print(f"크롬 드라이버 풀 초기화 완료 (최대 3개 드라이버 유지)")
+    
     # 캐릭터 업데이트 스레드 시작
     update_thread = threading.Thread(target=background_update_task, daemon=True)
     update_thread.name = "character-update-thread"
     update_thread.start()
     #logger.info("Started background character update thread")
     
-    # 인구수 업데이트 스레드 시작
+    # 인구수 업데이트 스레드 시작 (1개 쓰레드만 배정)
     population_thread = threading.Thread(target=update_population_data, daemon=True)
     population_thread.name = "population-update-thread"
     population_thread.start()
-    print("인구수 업데이트 백그라운드 스레드 시작됨")
+    print("인구수 업데이트 백그라운드 쓰레드 시작됨 (1개 쓰레드)")
     
     # 인구수 통계 업데이트 스레드 시작
     stats_thread = threading.Thread(target=update_population_statistics_task, daemon=True)
     stats_thread.name = "population-statistics-thread"
     stats_thread.start()
-    print("인구수 통계 업데이트 백그라운드 스레드 시작됨")
+    print("인구수 통계 업데이트 백그라운드 쓰레드 시작됨")
     
     return [update_thread, population_thread, stats_thread]
