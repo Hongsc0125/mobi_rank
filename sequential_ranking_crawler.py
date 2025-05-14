@@ -1076,18 +1076,24 @@ def is_crawling_safe(server_name, collector_size):
     # 전체 크롤링 일시 중단 상태 확인
     global db_stats
     if db_stats.get("paused", False):
+        # 이미 일시 중단된 상태면 즉시 False 반환
         return False
     
     # DB 큐 크기 확인
-    queue_size = db_stats.get("queue_size", 0)
+    queue_size = db_queue.qsize()  # 실시간 큐 크기 확인
+    db_stats["queue_size"] = queue_size  # 통계에 현재 큐 크기 업데이트
+    
     if queue_size > MAX_QUEUE_SIZE:
-        logger.warning(f"DB 큐 크기 임계값 초과: {queue_size} > {MAX_QUEUE_SIZE}, 전체 크롤링 일시 중단")
+        logger.warning(f"[큐 관리] DB 큐 크기 임계값 심각하게 초과: {queue_size} > {MAX_QUEUE_SIZE}, 모든 크롤링 작업 중단하고 DB 작업만 계속함")
         db_stats["paused"] = True
+        # 모든 서버에 대한 크롤링을 중지
+        for server in crawling_paused:
+            crawling_paused[server] = True
         return False
     
     # 개별 서버 콜렉터 크기 확인
     if collector_size > MAX_COLLECTOR_SIZE:
-        logger.warning(f"서버 {server_name} 콜렉터 크기 임계값 초과: {collector_size} > {MAX_COLLECTOR_SIZE}, 해당 서버 크롤링 일시 중단")
+        logger.warning(f"[큐 관리] 서버 {server_name} 콜렉터 크기 임계값 초과: {collector_size} > {MAX_COLLECTOR_SIZE}, 해당 서버 크롤링 일시 중단")
         return False
     
     return True
@@ -1104,20 +1110,30 @@ def is_safe_to_resume(server_name, collector_size):
     """
     # 전체 크롤링 일시 중단 상태 확인
     global db_stats
+    
+    # 실시간 큐 크기 확인
+    queue_size = db_queue.qsize()  
+    db_stats["queue_size"] = queue_size  # 통계에 현재 큐 크기 업데이트
+    
     if db_stats.get("paused", False):
         # DB 큐가 안전 수준 이하로 내려갔는지 확인
-        queue_size = db_stats.get("queue_size", 0)
         if queue_size <= SAFE_QUEUE_SIZE:
-            logger.info(f"DB 큐 크기 안전 수준 도달: {queue_size} <= {SAFE_QUEUE_SIZE}, 크롤링 재개 가능")
+            logger.info(f"[큐 관리] DB 큐 크기가 안전 수준으로 감소함: {queue_size} <= {SAFE_QUEUE_SIZE}, 모든 서버의 크롤링 작업 재개 가능")
             db_stats["paused"] = False
+            # 모든 서버에 대해 크롤링 재개
+            for server in crawling_paused:
+                crawling_paused[server] = False
             return True
-        return False
+        else:
+            logger.warning(f"[큐 관리] DB 큐 크기가 여전히 높음: {queue_size} > {SAFE_QUEUE_SIZE}, DB 작업만 계속 진행")
+            return False
     
-    # 콜렉터 크기가 안전 수준 이하로 내려갔는지 확인
+    # 개별 서버 콜렉터 크기 확인
     if collector_size <= SAFE_COLLECTOR_SIZE:
         return True
-    
-    return False
+    else:
+        logger.debug(f"[큐 관리] 서버 {server_name} 콜렉터 크기 여전히 높음: {collector_size} > {SAFE_COLLECTOR_SIZE}")
+        return False
 
 def sequential_rank_crawl_worker(server_num, div=1):
     """마지막 랭킹부터 1등까지 순차적으로 크롤링하는 워커 함수
@@ -1175,27 +1191,57 @@ def sequential_rank_crawl_worker(server_num, div=1):
                 if (current_time - last_status_check).total_seconds() >= STATUS_CHECK_INTERVAL:
                     last_status_check = current_time
                     
-                    # 크롤링 일시 중단 상태일 경우 재개 가능한지 확인
+                    # DB 큐 크기 확인 - 실시간 큐 크기 가져오기
+                    queue_size = db_queue.qsize()
+                    db_stats["queue_size"] = queue_size  # 통계 업데이트
+                    
+                    # 전체 시스템이 일시 중단 상태인지 확인 (DB 큐가 너무 큰 경우)
+                    if db_stats.get("paused", False):
+                        # DB 큐가 너무 크면 크롤링 중단하고 DB 작업만 계속 수행
+                        logger.warning(f"[큐 관리] 현재 전체 크롤링 중단 상태: 서버 {server_name}, DB 큐 크기={queue_size} > {SAFE_QUEUE_SIZE}")
+                        update_thread_status(thread_name, f"DB 작업만 진행 중", f"서버 {server_name}, 큐 크기={queue_size}")
+                        
+                        # 배치 저장 수행
+                        if collector.batch:
+                            logger.info(f"[큐 관리] 서버 {server_name}의 남은 데이터({len(collector.batch)}개) 저장")
+                            collector.flush()
+                        
+                        # 일정 시간 대기 후 다시 상태 확인
+                        display_stats_dashboard()  # 현재 상태 표시
+                        time.sleep(PAUSE_DURATION * 2)  # 좀 더 오래 대기
+                        continue
+                    
+                    # 서버별 크롤링 일시 중단 상태 처리
                     if crawling_paused[server_name]:
+                        # 크롤링 재개 가능한지 확인
                         if is_safe_to_resume(server_name, collector_size):
-                            logger.info(f"서버 {server_name} 크롤링 재개: 콜렉터 크기={collector_size}, DB 큐 크기={db_stats.get('queue_size', 0)}")
+                            logger.info(f"[큐 관리] 서버 {server_name} 크롤링 작업 재개: 콜렉터 크기={collector_size}, DB 큐 크기={queue_size}")
                             crawling_paused[server_name] = False
-                            update_thread_status(thread_name, f"크롤링 재개됨", f"서버 {server_name}, 가능 상태: 안전")
+                            update_thread_status(thread_name, f"크롤링 재개됨", f"서버 {server_name}, 상태: 안전, 큐: {queue_size}")
                         else:
-                            # 아직 안전하지 않은 경우 잠시 대기 후 다시 확인
-                            logger.warning(f"서버 {server_name} 크롤링 계속 일시 중단: 콜렉터 크기={collector_size}, DB 큐 크기={db_stats.get('queue_size', 0)}")
-                            update_thread_status(thread_name, f"일시 중단 중", f"서버 {server_name}, 안전한 상태 대기 중")
+                            # 아직 안전하지 않은 경우 대기
+                            logger.warning(f"[큐 관리] 서버 {server_name} 크롤링 계속 중단 상태: 콜렉터 크기={collector_size}, DB 큐 크기={queue_size}")
+                            update_thread_status(thread_name, f"일시 중단 중", f"서버 {server_name}, 큐: {queue_size}")
+                            
+                            # 배치 데이터가 있으면 저장
+                            if collector.batch:
+                                logger.info(f"[큐 관리] 일시 중단 상태에서 서버 {server_name}의 남은 데이터({len(collector.batch)}개) 저장")
+                                collector.flush()
+                                
                             display_stats_dashboard()  # 현재 상태 표시
                             time.sleep(PAUSE_DURATION)
                             continue
                     # 크롤링 중이면 안전한지 확인
                     elif not is_crawling_safe(server_name, collector_size):
-                        logger.warning(f"서버 {server_name} 크롤링 일시 중단 시작: 콜렉터 크기={collector_size}, DB 큐 크기={db_stats.get('queue_size', 0)}")
+                        logger.warning(f"[큐 관리] 서버 {server_name} 크롤링 일시 중단 시작: 콜렉터 크기={collector_size}, DB 큐 크기={queue_size}")
                         crawling_paused[server_name] = True
-                        update_thread_status(thread_name, f"일시 중단 시작", f"서버 {server_name}, 가능 상태: 위험")
+                        update_thread_status(thread_name, f"일시 중단 시작", f"서버 {server_name}, 큐: {queue_size}")
                         
                         # 크롤링 중단 시 강제 배치 저장 수행
-                        collector.flush()
+                        if collector.batch:
+                            logger.info(f"[큐 관리] 일시 중단 시작: 서버 {server_name}의 데이터({len(collector.batch)}개) 즉시 저장")
+                            collector.flush()
+                        
                         display_stats_dashboard()  # 현재 상태 표시
                         time.sleep(PAUSE_DURATION)
                         continue
