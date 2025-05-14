@@ -23,6 +23,7 @@ from concurrent.futures import ThreadPoolExecutor
 import random
 from selenium.common.exceptions import WebDriverException
 import queue
+from sequential_ranking_crawler import start_sequential_rank_crawling
 
 # DB 연결 모듈 가져오기
 from service.db import insert_data, get_980_data, delete_character_data
