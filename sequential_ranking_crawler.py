@@ -120,7 +120,7 @@ db_worker_running = threading.Event()   # DB 작업자 쓰레드 상태
 db_worker_running.set()                 # 초기에는 작동 상태로 설정
 
 # DB 작업자 쓰레드 수 (3개로 설정)
-DB_WORKER_COUNT = 3
+DB_WORKER_COUNT = 7
 db_worker_threads = []  # DB 작업자 쓰레드 목록
 
 # 크롤링 작업 통계 및 상황판 관리
@@ -1213,6 +1213,9 @@ def sequential_rank_crawl_worker(server_num, div=1):
                 current_char_idx = 0
                 total_chars = len(chars)
                 
+                # 디버깅: 총 캐릭터 수 기록
+                # logger.info(f"서버 {server_name}의 총 캐릭터 수: {total_chars}개")
+                
                 with last_crawled_character_lock:
                     if server_name not in last_crawled_character_index:
                         current_char_idx = 0  # 처음부터 시작 (이미 랭킹 내림차순으로 정렬되어 있음)
@@ -1246,6 +1249,9 @@ def sequential_rank_crawl_worker(server_num, div=1):
                 # 랭킹 구간은 현재 랭킹이 없을 경우 단순 캐릭터 인덱스로 표시
                 rank_info = f"{current_char_idx+1}/{total_chars}"
                 update_server_rank_info(server_name, rank_info, current_char)
+                
+                # 디버깅: 크롤링 시작 로그 추가
+                # logger.info(f"서버 {server_name}, 캐릭터 '{current_char}' 크롤링 시작 (인덱스: {current_char_idx+1}/{total_chars})")
                 
                 # 캐릭터 이름으로 검색하여 데이터 가져오기
                 # API 호출에는 server_num을 사용
