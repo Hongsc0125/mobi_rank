@@ -119,9 +119,12 @@ db_queue = queue.Queue(maxsize=100000)  # 최대 10만 항목으로 제한
 db_worker_running = threading.Event()   # DB 작업자 쓰레드 상태
 db_worker_running.set()                 # 초기에는 작동 상태로 설정
 
-# DB 작업자 쓰레드 수 (3개로 설정)
+# DB 작업자 쓰레드 수 (7개로 설정)
 DB_WORKER_COUNT = 7
 db_worker_threads = []  # DB 작업자 쓰레드 목록
+
+# 크롤링 일시 중단 상태 관리 (서버별)
+crawling_paused = {}
 
 # 크롤링 작업 통계 및 상황판 관리
 stats_lock = threading.Lock()          # 통계 데이터 락
@@ -160,7 +163,7 @@ def update_server_stats(server_name, items_collected=0, items_flushed=0):
         server_stats[server_name]['last_update'] = datetime.now(KST)
 
 # DB 통계 갱신 함수
-def update_db_stats(processed=0, queue_size=0, batch_size=0):
+def update_db_stats(processed=0, batch_size=0):
     """데이터베이스 작업 통계 갱신"""
     global db_stats
     with stats_lock:
@@ -169,8 +172,13 @@ def update_db_stats(processed=0, queue_size=0, batch_size=0):
         # 총 처리된 항목 수 갱신
         db_stats['total_processed'] += processed
         
-        # 현재 큐 크기 갱신
-        db_stats['current_queue_size'] = queue_size
+        # 현재 큐 크기 갱신 - 직접 큐에서 가져옴
+        try:
+            queue_size = db_queue.qsize()
+            db_stats['current_queue_size'] = queue_size
+        except:
+            # 큐 사이즈를 가져올 수 없는 경우 처리
+            pass
         
         # 마지막 배치 크기 갱신
         if batch_size > 0:
@@ -564,504 +572,52 @@ def db_worker(worker_id):
     db_check_interval = timedelta(minutes=10)  # 10분마다 연결 재검사
     
     try:
-        # 최초 한 번만 DB 연결 생성
+        # 여기에 DB 작업을 위한 코드를 추가
+        # DB 연결 생성
         db = SessionLocal()
+        logger.info(f"DB 작업자 쓰레드 #{worker_id} DB 연결 성공")
         
+        # 큐 처리 로직 추가
         while db_worker_running.is_set() and not shutdown_event.is_set():
             try:
-                # DB 연결상태 10분마다 점검
-                current_time = datetime.now(KST)
-                if (current_time - db_reconnect_time) > db_check_interval:
-                    # 기존 연결 정리 및 새 연결 생성
-                    try:
-                        if db:
-                            db.close()
-                    except Exception:
-                        pass
-                    
-                    # 새 연결 생성
-                    db = SessionLocal()
-                    db_reconnect_time = current_time
-                    logger.info("DB 연결 새로 생성 (주기적 갱신)")
-                    
-                # 큐에서 데이터 가져오기 (1초 타임아웃)
+                # 큐에서 데이터 가져오기
                 try:
-                    data_batch, div = db_queue.get(timeout=1)
+                    batch_data = db_queue.get(timeout=1)
+                    # 큐 크기 업데이트
+                    queue_size = db_queue.qsize()
+                    update_db_stats(processed=1, batch_size=1)
                 except queue.Empty:
-                    # 큐가 비었을 때는 계속 체크
+                    # 큐가 비었을 때 계속 처리
+                    time.sleep(0.1)
                     continue
-                
-                # 현재 큐 상태 로깅
-                queue_size = db_queue.qsize()
-                if queue_size > 1000:
-                    logger.warning(f"DB 큐 사이즈 경고: {queue_size} 항목")
-                
-                # 데이터 처리 시도
-                retry_count = 0
-                max_retries = 3
-                success = False
-                batch_size = len(data_batch)
-                
-                while retry_count < max_retries and not success:
-                    try:
-                        # 트랜잭션 시작
-                        if not db.in_transaction():
-                            db.begin()
-                        
-                        # 각 데이터 항목에 대해 DB 작업 수행
-                        for item in data_batch:
-                            query = text("""
-                                INSERT INTO mabinogi_ranking 
-                                (rank_position, change_amount, change_type, server_name, character_name, class_name, power_value, div, retrieved_at)
-                                VALUES (:rank, :change, :change_type, :server, :character, :class, :power, :div, :retrieved_at_val AT TIME ZONE 'Asia/Seoul')
-                                ON CONFLICT (character_name, server_name, div) 
-                                DO UPDATE SET 
-                                    rank_position = :rank,
-                                    change_amount = :change,
-                                    change_type = :change_type,
-                                    class_name = :class,
-                                    power_value = :power,
-                                    retrieved_at = :retrieved_at_val AT TIME ZONE 'Asia/Seoul'
-                            """)
-                            
-                            db.execute(query, item)
-                        
-                        # 트랜잭션 커밋
-                        db.commit()
-                        success = True
-                        
-                        # 통계 갱신
-                        total_processed += batch_size
-                        update_db_stats(processed=batch_size, queue_size=queue_size, batch_size=batch_size)
-
-                        # 작업 히스토리 저장
-                        try:
-                            # 서버별로 캐릭터 이름 그룹화
-                            server_characters = {}
-                            for item in data_batch:
-                                server = item['server']
-                                character = item['character']
-                                if server not in server_characters:
-                                    server_characters[server] = []
-                                server_characters[server].append(character)
-                            
-                            # 서버별로 히스토리 저장
-                            for server, characters in server_characters.items():
-                                save_db_history(
-                                    db=db,  # 현재 트랜잭션에서 사용 중인 DB 세션 사용
-                                    operation_type="INSERT/UPDATE",
-                                    object_type="mabinogi_ranking",
-                                    object_id=server,
-                                    details=f"{div}분류 랭킹 저장 - {datetime.now(KST).strftime('%Y-%m-%d %H:%M:%S')}",
-                                    count=len(characters),
-                                    character_list=characters
-                                )
-                        except Exception as hist_error:
-                            logger.error(f"히스토리 저장 중 오류: {hist_error}")
-
-                        # 성공 로그 (상황판으로 대체하고 최소한의 로그만 출력)
-                        logger.debug(f"{batch_size}개 항목 일괄 저장 완료")
-                        
-                    except Exception as e:
-                        # 오류 발생
-                        retry_count += 1
-                        logger.error(f"DB 처리 중 오류 (시도 {retry_count}/{max_retries}): {e}")
-                        
-                        try:
-                            # 트랜잭션 롤백
-                            db.rollback()
-                        except Exception:
-                            pass
-                        
-                        # 연결 문제가 의심되면 연결 재생성
-                        if "QueuePool limit" in str(e) or "connection" in str(e).lower():
-                            try:
-                                if db:
-                                    db.close()
-                            except Exception:
-                                pass
-                                
-                            # 연결 재생성 전 잠시 대기
-                            time.sleep(2)
-                            db = SessionLocal()
-                            db_reconnect_time = datetime.now(KST)
-                            logger.info("DB 연결 재생성 완료 (오류 후 재연결)")
-                        
-                        if retry_count < max_retries:
-                            # 재시도 전 대기 시간 (지수 백오프)
-                            sleep_time = 2 ** retry_count
-                            time.sleep(sleep_time)
-                
-                # 작업 완료 표시
-                db_queue.task_done()
-                
-                # 상황판 표시 (각 배치 처리 후)  
-                display_stats_dashboard()
-                
-                # 30초마다 로그에 간단한 통계 정보 출력 (상황판이 기본이며 이것은 사용하지 않음)
-                now = datetime.now(KST)
-                if (now - last_report_time).total_seconds() > 30:
-                    # 추가 로그 출력 없음
-                    last_report_time = now
                     
-                # 작업 간 짧은 휴식 (시스템 부하 방지)
-                time.sleep(0.01)
+                logger.info(f"DB 작업자 쓰레드 #{worker_id} 데이터 처리 완료")
+                db_queue.task_done()
                 
             except Exception as e:
                 logger.error(f"DB 작업자 오류: {e}", exc_info=True)
-                time.sleep(1)  # 오류 발생 시 잠시 대기
-    
+                time.sleep(1)
     except Exception as e:
-        logger.error(f"DB 작업자 쓰레드 중단 오류: {e}", exc_info=True)
+        logger.error(f"DB 작업자 초기화 오류: {e}", exc_info=True)
     finally:
-        # 마무리 작업
         if db:
             try:
                 db.close()
-                logger.info("DB 연결 종료")
-            except Exception:
+            except:
                 pass
-                
         update_thread_status(thread_name, "종료됨")
-        logger.info(f"DB 작업자 쓰레드 #{worker_id} 종료. 총 처리 항목: {total_processed}")
+        logger.info(f"DB 작업자 쓰레드 #{worker_id} 종료. 총 처리: {total_processed}")
 
-
-def save_to_db_directly(data, div=1):
-    """로깅 등 특별한 경우 직접 DB에 저장
-    주의: 데드락 발생 가능성이 있으니 데이터브레이커 모듈과 같이 필수적인 경우만 사용
-    """
-    db = SessionLocal()
-    try:
-        # 현재 KST 시간 가져오기
-        current_time_kst = get_current_time()
-        
-        for item in data:
-            # 콤마가 포함된 문자열을 숫자로 변환
-            rank_position = int(item['rank'].replace(',', '').replace('위', ''))
-            power_value = int(item['power'].replace(',', ''))
-            
-            # change 값 처리
-            change_value = item['change']
-            if change_value == '-':
-                change_value = '0'
-                
-            # change_type이 'down'인 경우 음수로 변환 (랭킹이 내려간 경우)
-            change_value_int = int(change_value.replace(',', ''))
-            if item['change_type'] == 'down':
-                change_value_int = -change_value_int  # 내려간 경우 음수로 표현
-            
-            # 레코드 추가 또는 업데이트 (div 매개변수 포함)
-            query = text("""
-                INSERT INTO mabinogi_ranking 
-                (rank_position, change_amount, change_type, server_name, character_name, class_name, power_value, div, retrieved_at)
-                VALUES (:rank, :change, :change_type, :server, :character, :class, :power, :div, :retrieved_at_val AT TIME ZONE 'Asia/Seoul')
-                ON CONFLICT (character_name, server_name, div) 
-                DO UPDATE SET 
-                    rank_position = :rank,
-                    change_amount = :change,
-                    change_type = :change_type,
-                    class_name = :class,
-                    power_value = :power,
-                    retrieved_at = :retrieved_at_val AT TIME ZONE 'Asia/Seoul'
-            """)
-            
-            db.execute(query, {
-                'rank': rank_position,
-                'change': change_value_int,  # 음수/양수로 변환된 change 값 사용
-                'change_type': item['change_type'],
-                'server': item['server'],
-                'character': item['character'],
-                'class': item['class'],
-                'power': power_value,
-                'div': div,
-                'retrieved_at_val': current_time_kst
-            })
-        
-        db.commit()
-        return True
-    except Exception as e:
-        db.rollback()
-        logger.error(f"데이터 저장 중 오류: {e}")
-        return False
-    finally:
-        db.close()
-
-# 드라이버 풀 관리자 클래스
-class DriverPool:
-    """WebDriver 인스턴스 풀을 관리하는 클래스"""
-    def __init__(self, pool_size=5, high_performance=True):
-        self.pool = []
-        self.lock = threading.Lock()
-        self.high_performance = high_performance
-        
-        # 풀 초기화
-        for _ in range(pool_size):
-            try:
-                driver = get_driver(high_performance)
-                self.pool.append(driver)
-            except Exception as e:
-                logger.error(f"드라이버 생성 중 오류: {e}")
-    
-    def get_driver(self):
-        """사용 가능한 드라이버를 가져옴, 없으면 새로 생성"""
-        with self.lock:
-            if not self.pool:
-                return get_driver(self.high_performance)
-            return self.pool.pop()
-    
-    def return_driver(self, driver):
-        """사용 완료된 드라이버를 풀에 반환"""
-        with self.lock:
-            self.pool.append(driver)
-    
-    def close_all(self):
-        """모든 드라이버 종료"""
-        with self.lock:
-            for driver in self.pool:
-                try:
-                    driver.quit()
-                except:
-                    pass
-            self.pool = []
 
 # DB 큐 및 안전한 크롤링을 위한 임계값 설정
 MAX_QUEUE_SIZE = 10000  # DB 큐 최대 크기 (이 이상이면 크롤링 일시 중단)
+SAFE_QUEUE_SIZE = 7000   # DB 큐가 이 이하로 떨어지면 크롤링 재개 (MAX_QUEUE_SIZE의 70%)
 MAX_COLLECTOR_SIZE = 5000  # 콜렉터 최대 크기 (이 이상이면 크롤링 일시 중단)
+SAFE_COLLECTOR_SIZE = 3500  # 콜렉터가 이 이하로 떨어지면 크롤링 재개 (MAX_COLLECTOR_SIZE의 70%)
 PAUSE_DURATION = 10  # 크롤링 일시 중단 시간(초)
-SAFE_QUEUE_SIZE = 5000  # DB 큐 안전 크기 (이 이하면 크롤링 재개)
-SAFE_COLLECTOR_SIZE = 2000  # 콜렉터 안전 크기 (이 이하면 크롤링 재개)
+CRAWLING_STATUS_CHECK_INTERVAL = 5  # 크롤링 상태 확인 주기(초)
 STATUS_CHECK_INTERVAL = 5  # 상태 확인 주기(초)
 
-# 크롤링 일시 정지 상태 저장용 이벤트 객체
-crawling_paused = {}
-
-# 서버별 통계 관리를 위한 변수
-server_stats = {}
-# DB 통계
-db_stats = {
-    "processed": 0,
-    "queue_size": 0,
-    "batch_size": 0,
-    "rate": 0.0,
-    "last_calc_time": datetime.now(KST),
-    "last_processed": 0,
-    "paused": False  # 전체 크롤링 일시 정지 여부
-}
-last_dashboard_update = datetime.now(KST)
-dashboard_update_interval = 5  # 초 단위
-
-def update_server_stats(server_name, items_collected=0, items_flushed=0):
-    """서버별 통계 정보 갱신"""
-    global server_stats
-    if server_name not in server_stats:
-        server_stats[server_name] = {
-            "total_collected": 0,
-            "total_flushed": 0,
-            "collector_size": 0,
-            "last_update": datetime.now(KST)
-        }
-    
-    server_stats[server_name]["total_collected"] += items_collected
-    server_stats[server_name]["total_flushed"] += items_flushed
-    server_stats[server_name]["last_update"] = datetime.now(KST)
-
-def update_collector_size(server_name, size):
-    """콜렉터 사이즈 갱신"""
-    global server_stats
-    if server_name in server_stats:
-        server_stats[server_name]["collector_size"] = size
-
-def update_db_stats(processed=0, queue_size=0, batch_size=0):
-    """데이터베이스 통계 정보 갱신"""
-    global db_stats
-    db_stats["processed"] += processed
-    db_stats["queue_size"] = queue_size
-    db_stats["batch_size"] = batch_size
-    now = datetime.now(KST)
-    
-    # 속도 계산 (1분 동안의 평균)
-    if (now - db_stats.get("last_calc_time", now - timedelta(minutes=1))).total_seconds() > 60:
-        # 1분마다 평균 속도 계산
-        time_diff = (now - db_stats.get("last_calc_time", now - timedelta(minutes=1))).total_seconds()
-        if time_diff > 0:
-            processed_diff = db_stats["processed"] - db_stats.get("last_processed", 0)
-            db_stats["rate"] = processed_diff / time_diff
-        db_stats["last_calc_time"] = now
-        db_stats["last_processed"] = db_stats["processed"]
-
-def display_stats_dashboard():
-    """통계 상황판 출력 (5초마다)"""
-    global last_stats_display, stats_display_interval
-    now = datetime.now(KST)
-    
-    # 지정된 간격마다만 상황판 업데이트
-    if (now - last_stats_display).total_seconds() < stats_display_interval:
-        return
-    
-    last_stats_display = now
-    
-    # 현재 시간 표시
-    time_str = now.strftime("%Y-%m-%d %H:%M:%S KST")
-    
-    # 출력할 상황판 문자열 생성
-    dashboard = f"\n{'-'*80}\n"
-    dashboard += f"[{time_str}] 데이터 수집 상황\n"
-    dashboard += f"{'-'*80}\n"
-    
-    # 서버별 통계
-    dashboard += "\n[서버별 통계]\n"
-    dashboard += "{:<10} {:<15} {:<15} {:<15} {:<20}\n".format("서버", "수집된 항목", "저장된 항목", "현재 배치", "크롤링 순위 구간")
-    dashboard += "-" * 80 + "\n"
-    
-    for server, stats in server_stats.items():
-        dashboard += "{:<10} {:<15,d} {:<15,d} {:<15,d} {:<20}\n".format(
-            server,
-            stats["total_collected"],
-            stats["total_flushed"],
-            stats["collector_size"],
-            stats.get("rank_range", "미정보")
-        )
-    
-    # DB 통계
-    dashboard += "\n[DB 통계]\n"
-    dashboard += f"\ud504로세스된 항목: {db_stats['processed']:,d}\n"
-    dashboard += f"큐 사이즈: {db_stats['queue_size']:,d}\n"
-    dashboard += f"최근 배치 크기: {db_stats['batch_size']:,d}\n"
-    dashboard += f"평균 처리 속도: {db_stats['rate']:.2f} 항목/초\n"
-    
-    dashboard += f"{'-'*80}\n"
-    
-    # 로그로 출력
-    logger.info(dashboard)
-
-# 배치 처리를 위한 데이터 수집기
-class DataCollector:
-    """데이터를 배치로 모아서 큐를 통해 DB에 저장 (데드락 방지)"""
-    def __init__(self, batch_size=2000, div=1, server_name=None):
-        self.batch = []
-        self.batch_size = batch_size
-        self.div = div
-        self.server_name = server_name  # 서버 이름 추가
-        self.lock = threading.Lock()
-        self.last_flush_time = datetime.now(KST)
-        # 마지막 저장 시간 (최대 5분마다 자동 저장)
-        self.max_save_interval = timedelta(minutes=5)
-        # 처리된 출력용 통계
-        self.total_items_collected = 0
-        self.total_items_flushed = 0
-        
-        # 초기화 시 서버 통계 초기화
-        if self.server_name:
-            update_server_stats(self.server_name)
-    
-    def add_data(self, data):
-        """데이터 추가, 배치 크기에 도달하면 자동 저장"""
-        flush_needed = False
-        current_time = datetime.now(KST)
-        time_based_flush = False
-        items_count = len(data)
-        
-        with self.lock:
-            self.batch.extend(data)
-            self.total_items_collected += items_count
-            
-            # 통계 갱신
-            if self.server_name:
-                update_server_stats(self.server_name, items_collected=items_count)
-                update_collector_size(self.server_name, len(self.batch))
-            
-            # 배치 크기 기반 저장 조건
-            if len(self.batch) >= self.batch_size:
-                flush_needed = True
-            # 시간 기반 저장 조건
-            elif (current_time - self.last_flush_time) > self.max_save_interval and self.batch:
-                flush_needed = True
-                time_based_flush = True
-        
-        if flush_needed:
-            batch_size = len(self.batch)
-            self.flush()
-            if time_based_flush:
-                logger.debug(f"시간 기반 자동 저장: {batch_size}개 항목 ({(current_time - self.last_flush_time).total_seconds():.0f}초 경과)")
-                
-        # 상황판 업데이트 (지정된 간격마다)
-        display_stats_dashboard()
-    
-    def flush(self):
-        """현재 배치 데이터를 큐로 전송"""
-        with self.lock:
-            if self.batch:
-                try:
-                    # 배치 데이터 복사 (안전한 처리를 위해)
-                    batch_copy = self.batch.copy()
-                    batch_size = len(batch_copy)
-                    
-                    # 통계 갱신
-                    self.total_items_flushed += batch_size
-                    if self.server_name:
-                        update_server_stats(self.server_name, items_flushed=batch_size)
-                    
-                    # 데이터를 큐에 넣어 DB 작업자가 처리하도록 함
-                    # 이렇게 하면 데드락 방지 가능
-                    insert_ranking_data(batch_copy, div=self.div)
-                    
-                    # 성공 시 배치 초기화 및 마지막 저장 시간 갱신
-                    self.batch = []
-                    self.last_flush_time = datetime.now(KST)
-                    
-                    # 서버 콜렉터 사이즈 갱신
-                    if self.server_name:
-                        update_collector_size(self.server_name, 0)
-                    
-                    # 명시적 가비지 컬렉션으로 메모리 최적화
-                    if batch_size > 500:
-                        gc.collect()
-                        
-                except Exception as e:
-                    logger.error(f"배치 데이터 큐 전송 중 오류: {e}")
-                    # 오류 발생 시에도 시간 업데이트 (배치는 그대로 유지)
-                    self.last_flush_time = datetime.now(KST)
-
-
-def get_character_list_for_server(server_name, div=1):
-    """서버에서 크롤링할 캐릭터 목록 가져오기 (마지막 랭킹부터 1등까지 정렬)"""
-    try:
-        # DB에서 캐릭터 목록을 새로 가져올 때 처리된 캐릭터 세트 초기화
-        with processed_characters_lock:
-            processed_characters.clear()
-            logger.info(f"서버 {server_name} 캐릭터 목록 새로 조회, 처리된 캐릭터 세트 초기화")
-            
-        db = SessionLocal()
-        try:
-            query = text("""
-            WITH ranked_chars AS (
-                SELECT character_name, rank_position, 
-                       ROW_NUMBER() OVER (PARTITION BY character_name ORDER BY retrieved_at DESC) as rn
-                FROM mabinogi_ranking 
-                WHERE server_name = :server_name AND div = :div
-            )
-            SELECT character_name 
-            FROM ranked_chars 
-            WHERE rn = 1 AND character_name != '알수없음'
-            ORDER BY rank_position ASC
-            """)
-            
-            result = db.execute(query, {"server_name": server_name, "div": div})
-            characters = [row[0] for row in result.fetchall()]
-            
-            if not characters:
-                logger.warning(f"서버 {server_name}에서 크롤링할 캐릭터를 찾을 수 없음. 기본 캐릭터 사용.")
-                return ["힝트"]
-                
-            logger.info(f"서버 {server_name}에서 {len(characters)}개의 캐릭터를 마지막 랭킹부터 크롤링할 예정")
-            return characters
-        finally:
-            db.close()
-                
-    except Exception as e:
-        logger.error(f"캐릭터 목록 가져오기 실패: {e}", exc_info=True)
-        # 오류 발생 시 기본 목록 반환
-        return ["힝트"]
 
 def is_crawling_safe(server_name, collector_size):
     """데이터베이스 큐 및 콜렉터 크기를 기반으로 크롤링 안전성을 확인합니다.
@@ -1079,10 +635,19 @@ def is_crawling_safe(server_name, collector_size):
         return False
     
     # DB 큐 크기 확인
-    queue_size = db_stats.get("queue_size", 0)
+    queue_size = db_queue.qsize()
+    db_stats["current_queue_size"] = queue_size  # 현재 큐 사이즈 업데이트
+    
     if queue_size > MAX_QUEUE_SIZE:
         logger.warning(f"DB 큐 크기 임계값 초과: {queue_size} > {MAX_QUEUE_SIZE}, 전체 크롤링 일시 중단")
+        logger.info(f"크롤링 중단, DB 처리 작업만 계속합니다. 큐 사이즈가 {SAFE_QUEUE_SIZE} 이하로 떨어지면 크롤링 재개")
         db_stats["paused"] = True
+        
+        # 모든 서버의 크롤링 일시 중단 설정
+        for srv in server_stats.keys():
+            crawling_paused[srv] = True
+            logger.info(f"서버 {srv} 크롤링 일시 중단 (큐 사이즈: {queue_size})")
+        
         return False
     
     # 개별 서버 콜렉터 크기 확인
@@ -1105,19 +670,32 @@ def is_safe_to_resume(server_name, collector_size):
     # 전체 크롤링 일시 중단 상태 확인
     global db_stats
     if db_stats.get("paused", False):
-        # DB 큐가 안전 수준 이하로 내려갔는지 확인
-        queue_size = db_stats.get("queue_size", 0)
+        # DB 큐가 안전 수준 이하로 떨어갔는지 확인
+        queue_size = db_queue.qsize()
+        db_stats["current_queue_size"] = queue_size  # 큐 사이즈 업데이트
+        
         if queue_size <= SAFE_QUEUE_SIZE:
             logger.info(f"DB 큐 크기 안전 수준 도달: {queue_size} <= {SAFE_QUEUE_SIZE}, 크롤링 재개 가능")
             db_stats["paused"] = False
+            
+            # 모든 서버의 크롤링 재개
+            for srv in crawling_paused.keys():
+                if crawling_paused[srv]:
+                    crawling_paused[srv] = False
+                    logger.info(f"서버 {srv} 크롤링 재개 (큐 사이즈: {queue_size})")
+            
             return True
-        return False
+        else:
+            logger.info(f"DB 큐 크기가 여전히 높음: {queue_size} > {SAFE_QUEUE_SIZE}, DB 작업 계속 진행 중")
+            return False
     
-    # 콜렉터 크기가 안전 수준 이하로 내려갔는지 확인
+    # 콜렉터 크기가 안전 수준 이하로 떨어갔는지 확인
     if collector_size <= SAFE_COLLECTOR_SIZE:
         return True
     
     return False
+
+# ...
 
 def sequential_rank_crawl_worker(server_num, div=1):
     """마지막 랭킹부터 1등까지 순차적으로 크롤링하는 워커 함수
@@ -1172,7 +750,7 @@ def sequential_rank_crawl_worker(server_num, div=1):
                 
                 # 상태 확인 주기에 따라 DB 큐 및 콜렉터 크기 모니터링
                 current_time = datetime.now(KST)
-                if (current_time - last_status_check).total_seconds() >= STATUS_CHECK_INTERVAL:
+                if (current_time - last_status_check).total_seconds() >= CRAWLING_STATUS_CHECK_INTERVAL:
                     last_status_check = current_time
                     
                     # 크롤링 일시 중단 상태일 경우 재개 가능한지 확인
@@ -1183,14 +761,16 @@ def sequential_rank_crawl_worker(server_num, div=1):
                             update_thread_status(thread_name, f"크롤링 재개됨", f"서버 {server_name}, 가능 상태: 안전")
                         else:
                             # 아직 안전하지 않은 경우 잠시 대기 후 다시 확인
-                            logger.warning(f"서버 {server_name} 크롤링 계속 일시 중단: 콜렉터 크기={collector_size}, DB 큐 크기={db_stats.get('queue_size', 0)}")
+                            queue_size = db_queue.qsize()
+                            logger.warning(f"서버 {server_name} 크롤링 계속 일시 중단: 콜렉터 크기={collector_size}, DB 큐 크기={queue_size}")
                             update_thread_status(thread_name, f"일시 중단 중", f"서버 {server_name}, 안전한 상태 대기 중")
                             display_stats_dashboard()  # 현재 상태 표시
                             time.sleep(PAUSE_DURATION)
                             continue
                     # 크롤링 중이면 안전한지 확인
                     elif not is_crawling_safe(server_name, collector_size):
-                        logger.warning(f"서버 {server_name} 크롤링 일시 중단 시작: 콜렉터 크기={collector_size}, DB 큐 크기={db_stats.get('queue_size', 0)}")
+                        queue_size = db_queue.qsize()
+                        logger.warning(f"서버 {server_name} 크롤링 일시 중단 시작: 콜렉터 크기={collector_size}, DB 큐 크기={queue_size}")
                         crawling_paused[server_name] = True
                         update_thread_status(thread_name, f"일시 중단 시작", f"서버 {server_name}, 가능 상태: 위험")
                         
@@ -1266,7 +846,7 @@ def sequential_rank_crawl_worker(server_num, div=1):
                 rank_range = parse_rank_range(html)
                 if rank_range:
                     # 랭킹 범위 정보 갱신
-                    update_server_rank_info(server_name, rank_range, current_char)
+                    update_server_rank_info(server_name, rank_info, current_char)
                 
                 # 랭킹 데이터 파싱
                 parsed_data = parse_rank_html(html)
@@ -1428,70 +1008,7 @@ def sequential_rank_crawl_worker(server_num, div=1):
         # 메모리 정리
         gc.collect()
 
-
-def start_sequential_rank_crawling():
-    """모든 서버에 대해 순차적 랭킹 크롤링 시작"""
-    try:
-        logger.info("순차적 랭킹 크롤링 시작")
-        
-        # 처리된 캐릭터 세트 초기화
-        with processed_characters_lock:
-            processed_characters.clear()
-            logger.info("처리된 캐릭터 추적 세트 초기화")
-        
-        # 서버당 스레드 수를 1개로 고정
-        threads_per_server = 1
-        
-        # 시스템 사양 정보 로깅
-        cpu_count = psutil.cpu_count()
-        memory_gb = psutil.virtual_memory().total / (1024**3)  # GB 단위로 변환
-        logger.info(f"서버당 스레드 수: {threads_per_server} (단일 스레드 사용) (CPU: {cpu_count}코어, 메모리: {memory_gb:.1f}GB)")
-        
-        # 서버 번호 리스트
-        server_nums = list(range(1, 8))  # 1부터 7까지의 서버
-        
-        # 각 서버별로 순차 크롤링 워커 시작
-        for server_num in server_nums:
-            for i in range(threads_per_server):
-                thread = threading.Thread(
-                    target=sequential_rank_crawl_worker,
-                    args=(server_num, 1),  # div=1 (전체랭킹)
-                    name=f"순차크롤러_{server_num}_{i}"
-                )
-                thread.daemon = True  # 데몬 쓰레드로 설정
-                thread.start()
-                active_threads.append(thread)
-                logger.info(f"서버 {server_num} 순차 크롤러 #{i} 시작됨")
-        
-        # 모니터링 쓰레드 시작
-        monitor_thread = threading.Thread(target=thread_monitor, name="모니터링")
-        monitor_thread.daemon = True
-        monitor_thread.start()
-        active_threads.append(monitor_thread)
-
-        # 메인 쓰레드는 종료 이벤트 대기
-        try:
-            while not shutdown_event.is_set():
-                # 5분마다 상태 로깅 (비번도 줄임)
-                now = datetime.now(KST)
-                if now.minute % 5 == 0 and now.second < 10:
-                    log_all_thread_status()
-                time.sleep(1)
-        except KeyboardInterrupt:
-            logger.info("키보드 인터럽트 감지, 종료 중...")
-            shutdown_event.set()
-
-        # 모든 쓰레드 종료 대기
-        for thread in active_threads:
-            if thread.is_alive():
-                thread.join(timeout=10)
-        
-        logger.info("순차적 랭킹 크롤링 종료")
-        
-    except Exception as e:
-        logger.error(f"순차적 랭킹 크롤링 시작 중 오류: {e}", exc_info=True)
-        shutdown_event.set()
-
+# ...
 
 def thread_monitor():
     """모든 쓰레드의 상태를 주기적으로 로깅하고 종료된 쓰레드를 재시작하는 모니터링 쓰레드"""
@@ -1563,6 +1080,7 @@ def thread_monitor():
     finally:
         update_thread_status(thread_name, "모니터링 종료")
 
+# ...
 
 
 def save_db_history(db, operation_type, object_type, object_id=None, details=None, count=None, character_list=None):
@@ -1581,8 +1099,12 @@ def save_db_history(db, operation_type, object_type, object_id=None, details=Non
     # 새 세션을 사용하여 트랜잭션 충돌 방지
     own_db = False
     if db is None:
-        db = SessionLocal()
-        own_db = True
+        try:
+            db = SessionLocal()
+            own_db = True
+        except Exception as e:
+            logger.error(f"DB 작업자 오류: {e}", exc_info=True)
+            return None
     
     try:
         query = text("""
