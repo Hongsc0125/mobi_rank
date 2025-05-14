@@ -274,7 +274,8 @@ def generate_daily_statistics():
                     avg_population = :avg_population,
                     max_population = :max_population,
                     min_population = :min_population,
-                    population_change = :population_change,
+                    population_change = :population_change
+                )
             """)
             
             db.execute(insert_query, {

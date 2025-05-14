@@ -50,10 +50,10 @@ logging.getLogger().setLevel(logging.WARNING)
 logger.setLevel(logging.INFO)
 
 # 시스템 리소스 제한 설정
-MAX_CPU_PERCENT = 70.0  # CPU 사용량 최대 70%
-MAX_MEMORY_PERCENT = 70.0  # 메모리 사용량 최대 70%
+MAX_CPU_PERCENT = 80.0  # CPU 사용량 최대 80%
+MAX_MEMORY_PERCENT = 80.0  # 메모리 사용량 최대 80%
 RESOURCE_CHECK_INTERVAL = 5  # 리소스 확인 주기(초)
-THROTTLE_DELAY = 0.5  # 리소스 사용량이 높을 때 추가 디레이(초)
+THROTTLE_DELAY = 1  # 리소스 사용량이 높을 때 추가 딜레이(초)
 
 # 리소스 사용량 상태 저장
 resource_usage_stats = {
@@ -910,15 +910,16 @@ def display_stats_dashboard():
     
     # 서버별 통계
     dashboard += "\n[서버별 통계]\n"
-    dashboard += "{:<10} {:<15} {:<15} {:<15}\n".format("서버", "수집된 항목", "저장된 항목", "현재 배치")
-    dashboard += "-" * 60 + "\n"
+    dashboard += "{:<10} {:<15} {:<15} {:<15} {:<20}\n".format("서버", "수집된 항목", "저장된 항목", "현재 배치", "크롤링 순위 구간")
+    dashboard += "-" * 80 + "\n"
     
     for server, stats in server_stats.items():
-        dashboard += "{:<10} {:<15,d} {:<15,d} {:<15,d}\n".format(
+        dashboard += "{:<10} {:<15,d} {:<15,d} {:<15,d} {:<20}\n".format(
             server,
             stats["total_collected"],
             stats["total_flushed"],
-            stats["collector_size"]
+            stats["collector_size"],
+            stats.get("rank_range", "미정보")
         )
     
     # DB 통계
@@ -1333,11 +1334,11 @@ def sequential_rank_crawl_worker(server_num, div=1):
                             if len(collector.batch) > 0:
                                 logger.warning(
                                     f"심각한 리소스 과부하: CPU {resource_usage_stats['cpu_percent']:.1f}%, "
-                                    f"메모리 {resource_usage_stats['memory_percent']:.1f}%, 배치 강제 저장 후 디레이 적용")
+                                    f"메모리 {resource_usage_stats['memory_percent']:.1f}%, 배치 강제 저장 후 딜레이 적용")
                                 collector.flush()  # 강제 배치 저장
-                                time.sleep(THROTTLE_DELAY * 4)  # 더 긴 디레이
+                                time.sleep(THROTTLE_DELAY * 4)  # 더 긴 딜레이
                                 continue
-                            time.sleep(THROTTLE_DELAY * 2)  # 더 긴 디레이
+                            time.sleep(THROTTLE_DELAY * 2)  # 더 긴 딜레이
                         else:
                             # 준위한 경우 기본 스로틀링
                             time.sleep(THROTTLE_DELAY)
@@ -1345,7 +1346,7 @@ def sequential_rank_crawl_worker(server_num, div=1):
                 # 기본 대기 시간 (과부하 방지)
                 # 스로틀링 중이 아닌 경우에도 기본 대기 시간 적용
                 if resource_usage_stats["throttling"]:
-                    time.sleep(THROTTLE_DELAY)  # 스로틀링 중일 때 추가 디레이
+                    time.sleep(THROTTLE_DELAY)  # 스로틀링 중일 때 추가 딜레이
                 else:
                     time.sleep(0.5)  # 일반 대기 시간 약간 감소
                 

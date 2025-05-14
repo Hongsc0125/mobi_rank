@@ -31,8 +31,8 @@ engine = create_engine(
     "postgresql://super:Wkwkd119%21%21@207.180.212.248:5444/rank_data",
     pool_pre_ping=True,  # 연결 유효성 검사
     echo=False,  # SQL 쿼리 로깅 비활성화
-    pool_size=4,  # DB 쓰레드(연결 풀) 수 설정
-    max_overflow=0  # 최대 초과 연결 수
+    pool_size=8,  # DB 쓰레드(연결 풀) 수 설정 (4에서 7로 증가)
+    max_overflow=2  # 최대 초과 연결 수
 )
 
 # 세션 팩토리 생성
