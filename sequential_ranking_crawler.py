@@ -891,14 +891,14 @@ def update_db_stats(processed=0, queue_size=0, batch_size=0):
 
 def display_stats_dashboard():
     """통계 상황판 출력 (5초마다)"""
-    global last_dashboard_update, dashboard_update_interval
+    global last_stats_display, stats_display_interval
     now = datetime.now(KST)
     
     # 지정된 간격마다만 상황판 업데이트
-    if (now - last_dashboard_update).total_seconds() < dashboard_update_interval:
+    if (now - last_stats_display).total_seconds() < stats_display_interval:
         return
     
-    last_dashboard_update = now
+    last_stats_display = now
     
     # 현재 시간 표시
     time_str = now.strftime("%Y-%m-%d %H:%M:%S KST")
@@ -1637,8 +1637,18 @@ if __name__ == "__main__":
         # 랭킹 크롤링 시작
         start_sequential_rank_crawling()
         
+        # 상황판 업데이트를 위한 시간 추적
+        last_dashboard_check = datetime.now(KST)
+        dashboard_check_interval = 5  # 5초마다 상황판 표시 확인
+        
         # 메인 쓰레드는 다른 작업을 할 수 있도록 계속 실행
         while not shutdown_event.is_set():
+            # 상황판 업데이트 확인
+            current_time = datetime.now(KST)
+            if (current_time - last_dashboard_check).total_seconds() >= dashboard_check_interval:
+                display_stats_dashboard()  # 상황판 표시 함수 호출
+                last_dashboard_check = current_time
+                
             time.sleep(1)
             
     except KeyboardInterrupt:
