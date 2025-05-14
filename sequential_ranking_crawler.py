@@ -1043,7 +1043,7 @@ def get_character_list_for_server(server_name, div=1):
             SELECT character_name 
             FROM ranked_chars 
             WHERE rn = 1 AND character_name != '알수없음'
-            ORDER BY rank_position DESC
+            ORDER BY rank_position ASC
             """)
             
             result = db.execute(query, {"server_name": server_name, "div": div})
