@@ -46,7 +46,7 @@ def rank_data(server=None, name=""):
         # 캐시가 있으면 형식 통일 후 반환
         if recent_all_ranks and recent_all_ranks.get("rankings"):
             normalized_data = normalize_rank_data(recent_all_ranks)
-            logger.info(f"캐시에서 모든 랭킹 데이터 검색 및 정규화: {normalized_data}")
+            logger.info(f"캐싱데이터 반환 : {normalized_data}")
             return {
                 "success": True, 
                 "data": normalized_data,
@@ -57,7 +57,6 @@ def rank_data(server=None, name=""):
         # 캐시에 없으면 세 가지 랭킹(전투력, 매력, 생활력) 데이터를 동시에 가져옴
         logger.info(f"서버 '{server}'에서 캐릭터 '{name}'의 모든 랭킹 동시 조회 시작")
         all_ranks_data = fetch_all_ranks(server, name)
-        logger.info(f"세 가지 랭킹 데이터 조회 완료: {all_ranks_data}")
         
         # 전투력 데이터가 비어있는지 확인
         combat_data = all_ranks_data.get("ranks", {}).get("전투력", {}).get("data", [])
@@ -74,7 +73,7 @@ def rank_data(server=None, name=""):
             }
         
         # 비동기로 세 가지 랭킹 데이터 모두 DB에 저장
-        logger.info(f"DB에 세 가지 랭킹 데이터 저장 시작")
+        logger.info(f"DB에 랭킹 데이터 저장 시작")
         async_insert_all_rank_data(all_ranks_data, server, name)
         logger.info(f"DB 업데이트 요청 완료")
         
@@ -91,12 +90,12 @@ def rank_data(server=None, name=""):
             }
         }
         
-        # 랭킹 데이터 출력을 위한 로깅
-        logger.info(f"all_ranks_data: {all_ranks_data}")
+        # 랭킹 데이터
+        # logger.info(f"all_ranks_data: {all_ranks_data}")
         
         # 각 랭킹에서 캐릭터 검색
         for rank_type, rank_data in all_ranks_data.get("ranks", {}).items():
-            logger.info(f"{rank_type} 랭킹 데이터: {rank_data}")
+            # logger.info(f"{rank_type} 랭킹 데이터: {rank_data}")
             logger.info(f"{rank_type} 랭킹 데이터 항목 수: {len(rank_data.get('data', []))}")
             
             for item in rank_data.get("data", []):

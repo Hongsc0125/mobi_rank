@@ -7,16 +7,35 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from pydantic import BaseModel
 from api.rankData import rank_data
 import logging
+import sys
 from service.background_tasks import start_background_tasks
 from service.db_session import engine
 import os
 
 # Configure logging
+import sys
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
+# 루트 로거 설정
+root_logger = logging.getLogger()
+root_logger.setLevel(logging.INFO)
+
+# 모든 하위 모듈 로거가 메시지를 올바르게 전파하도록 설정
+for log_name in ['api', 'service']:
+    module_logger = logging.getLogger(log_name)
+    module_logger.setLevel(logging.INFO)
+    module_logger.propagate = True
+    
+    # 핸들러가 없으면 추가
+    if not module_logger.handlers:
+        handler = logging.StreamHandler(sys.stdout)
+        handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
+        module_logger.addHandler(handler)
+
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
 
 # IP Whitelist middleware
 class IPWhitelistMiddleware(BaseHTTPMiddleware):
@@ -61,6 +80,7 @@ class SearchReq(BaseModel):
 
 @app.post("/search", summary="캐릭터 랭킹 조회")
 def api_search(req: SearchReq):
+    logger.info(f"--- 캐릭터 랭킹 조회시작: {req.server} - {req.character}")
     try:
         result = rank_data(req.server, req.character)
         
