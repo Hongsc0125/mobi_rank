@@ -8,6 +8,23 @@ from selenium.webdriver.chrome.options import Options
 import chromedriver_autoinstaller
 from service.db_session import get_current_time
 from datetime import timedelta
+import os
+
+# 싱글톤 락으로 chromedriver 설치를 한 번만 보장
+_chromedriver_installed = False
+_chromedriver_install_lock = threading.Lock()
+_chromedriver_path = None
+
+def install_chromedriver_once():
+    global _chromedriver_installed, _chromedriver_path
+    with _chromedriver_install_lock:
+        if not _chromedriver_installed:
+            _chromedriver_path = chromedriver_autoinstaller.install()
+            _chromedriver_installed = True
+    return _chromedriver_path
+
+# 서버 시작 시 한 번만 설치
+install_chromedriver_once()
 
 # 로그 설정
 logger = logging.getLogger(__name__)
@@ -50,7 +67,17 @@ class ChromeDriverPool:
     
     def _create_new_driver(self):
         """새 크롬 드라이버 인스턴스 생성"""
-        chromedriver_autoinstaller.install()
+        # install_chromedriver_once()은 이미 서버 시작 시 한 번만 호출됨
+        global _chromedriver_path
+        # 드라이버 설치 경로가 없으면 재시도(백오프)
+        retry = 0
+        while _chromedriver_path is None or not os.path.exists(_chromedriver_path):
+            logger.warning("chromedriver 경로가 유효하지 않아 재설치 시도")
+            install_chromedriver_once()
+            retry += 1
+            time.sleep(min(2 ** retry, 10))  # 점진적 대기 (최대 10초)
+            if retry > 5:
+                raise RuntimeError("chromedriver 설치 실패: 경로 없음")
 
         opts = Options()
         opts.add_argument("--headless=new")
@@ -64,7 +91,7 @@ class ChromeDriverPool:
         opts.add_experimental_option("excludeSwitches", ["enable-logging"])
         
         # 서비스 타임아웃 증가
-        service = Service()
+        service = Service(executable_path=_chromedriver_path)
         service.service_args = ['--verbose', '--log-path=chromedriver.log']
         
         return webdriver.Chrome(service=service, options=opts)
