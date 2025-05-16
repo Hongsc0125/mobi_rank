@@ -124,6 +124,35 @@ def get_population():
         logger.error(f"Population endpoint error: {e}")
         raise HTTPException(status_code=500, detail=f"서버 에러: {str(e)}")
 
+# 인구 통계 강제 실행 엔드포인트
+@app.get("/force-population-stats", summary="인구 통계 강제 저장")
+def force_population_statistics():
+    try:
+        from service.population_statistics import update_population_statistics
+        start_time = datetime.now()
+        result = update_population_statistics()
+        end_time = datetime.now()
+        execution_time = (end_time - start_time).total_seconds()
+        
+        if result:
+            logger.info(f"인구 통계 강제 실행 성공. 실행 시간: {execution_time}초")
+            return {
+                "success": True,
+                "message": "인구 통계 저장 성공",
+                "execution_time": f"{execution_time:.2f}초",
+                "executed_at": start_time.strftime("%Y-%m-%d %H:%M:%S")
+            }
+        else:
+            logger.error("인구 통계 강제 실행 실패")
+            return {
+                "success": False,
+                "message": "인구 통계 저장 실패. 서버 로그를 확인해주세요."
+            }
+    except Exception as e:
+        logger.error(f"인구 통계 강제 실행 엔드포인트 오류: {e}")
+        raise HTTPException(status_code=500, detail=f"서버 에러: {str(e)}")
+
+
 # Start background tasks when the server starts
 @app.on_event("startup")
 def startup_event():
