@@ -170,7 +170,7 @@ class ChromeDriverPool:
         while True:
             try:
                 time.sleep(60)  # 1분마다 체크
-                logger.info(f"[{get_current_time().strftime('%Y-%m-%d %H:%M:%S KST')}] 크롬 드라이버 상태 체크 시작")
+                # logger.info(f"[{get_current_time().strftime('%Y-%m-%d %H:%M:%S KST')}] 크롬 드라이버 상태 체크 시작")
                 
                 with self.lock:
                     # 사용 중인 드라이버 체크
@@ -180,7 +180,7 @@ class ChromeDriverPool:
                     stale_drivers = []
                     for driver, last_used in self.in_use.items():
                         if current_time - last_used > timedelta(minutes=30):
-                            logger.warning(f"[{current_time.strftime('%Y-%m-%d %H:%M:%S KST')}] 오래된 드라이버 감지 (30분 이상 사용)")
+                            # logger.warning(f"[{current_time.strftime('%Y-%m-%d %H:%M:%S KST')}] 오래된 드라이버 감지 (30분 이상 사용)")
                             stale_drivers.append(driver)
                     
                     # 오래된 드라이버 정리
@@ -194,17 +194,17 @@ class ChromeDriverPool:
                     
                     # 부족한 드라이버 생성
                     if available_count < self.pool_size:
-                        logger.info(f"[{current_time.strftime('%Y-%m-%d %H:%M:%S KST')}] 사용 가능한 드라이버: {available_count}/{self.pool_size}, 추가 생성 시작")
+                        # logger.info(f"[{current_time.strftime('%Y-%m-%d %H:%M:%S KST')}] 사용 가능한 드라이버: {available_count}/{self.pool_size}, 추가 생성 시작")
                         for _ in range(self.pool_size - available_count):
                             try:
                                 driver = self._create_new_driver()
                                 self.driver_queue.put_nowait(driver)
-                                logger.info(f"[{current_time.strftime('%Y-%m-%d %H:%M:%S KST')}] 추가 드라이버 생성 완료")
+                                # logger.info(f"[{current_time.strftime('%Y-%m-%d %H:%M:%S KST')}] 추가 드라이버 생성 완료")
                             except Exception as e:
                                 logger.error(f"[{current_time.strftime('%Y-%m-%d %H:%M:%S KST')}] 추가 드라이버 생성 실패: {e}")
                                 break
                             
-                logger.info(f"[{get_current_time().strftime('%Y-%m-%d %H:%M:%S KST')}] 크롬 드라이버 상태 체크 완료, 사용 가능: {self.driver_queue.qsize()}")
+                # logger.info(f"[{get_current_time().strftime('%Y-%m-%d %H:%M:%S KST')}] 크롬 드라이버 상태 체크 완료, 사용 가능: {self.driver_queue.qsize()}")
                 
             except Exception as e:
                 logger.error(f"[{get_current_time().strftime('%Y-%m-%d %H:%M:%S KST')}] 드라이버 상태 체크 오류: {e}")

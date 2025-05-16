@@ -80,7 +80,7 @@ class SearchReq(BaseModel):
 
 @app.post("/search", summary="캐릭터 랭킹 조회")
 def api_search(req: SearchReq):
-    logger.info(f"--- 캐릭터 랭킹 조회시작: {req.server} - {req.character}")
+    # logger.info(f"--- 캐릭터 랭킹 조회시작: {req.server} - {req.character}")
     try:
         result = rank_data(req.server, req.character)
         

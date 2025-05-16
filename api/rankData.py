@@ -64,7 +64,7 @@ def rank_data(server=None, name=""):
         life_data = all_ranks_data.get("ranks", {}).get("생활력", {}).get("data", [])
         
         if not combat_data and not charm_data and not life_data:
-            logger.warning(f"모든 랭킹에서 데이터가 비어있음")
+            # logger.warning(f"모든 랭킹에서 데이터가 비어있음")
             return {
                 "success": False,
                 "data": None,
@@ -96,12 +96,12 @@ def rank_data(server=None, name=""):
         # 각 랭킹에서 캐릭터 검색
         for rank_type, rank_data in all_ranks_data.get("ranks", {}).items():
             # logger.info(f"{rank_type} 랭킹 데이터: {rank_data}")
-            logger.info(f"{rank_type} 랭킹 데이터 항목 수: {len(rank_data.get('data', []))}")
+            # logger.info(f"{rank_type} 랭킹 데이터 항목 수: {len(rank_data.get('data', []))}")
             
             for item in rank_data.get("data", []):
-                logger.info(f"검색 중: {item}")
+                # logger.info(f"검색 중: {item}")
                 if item.get('server') == server and item.get('character') == name:
-                    logger.info(f"캐릭터 매칭: {item['server']} == {server} and {item['character']} == {name}")
+                    # logger.info(f"캐릭터 매칭: {item['server']} == {server} and {item['character']} == {name}")
                     character_data["rankings"][rank_type] = item
                     logger.info(f"캐릭터 '{name}'의 {rank_type} 랭킹 데이터 찾음: {item}")
                     break
