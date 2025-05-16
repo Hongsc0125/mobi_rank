@@ -117,19 +117,19 @@ def fetch_all_ranks(server=None, name=""):
     # 로거 가져오기
     logger = logging.getLogger(__name__)
     
-    logger.info(f"fetch_all_ranks 시작: 서버={server}, 캐릭터={name}")
+    # logger.info(f"fetch_all_ranks 시작: 서버={server}, 캐릭터={name}")
     
     # 한국 시간대 설정
     kst = pytz.timezone('Asia/Seoul')
     current_time = datetime.now(kst)
-    logger.info(f"현재 KST 시간: {current_time}")
+    # logger.info(f"현재 KST 시간: {current_time}")
     
     def fetch_rank_thread(rank_type):
         try:
-            logger.info(f"랭킹 조회 시작 (rank_type={rank_type})")
+            # logger.info(f"랭킹 조회 시작 (rank_type={rank_type})")
             html = fetch_rank_via_requests(server, name, rank_type)
             result = parse_rank_html(html)
-            logger.info(f"랭킹 조회 결과 (rank_type={rank_type}) - 데이터 개수: {len(result)}, 데이터 일부: {result[:3] if result else '[]'}")
+            # logger.info(f"랭킹 조회 결과 (rank_type={rank_type}) - 데이터 개수: {len(result)}, 데이터 일부: {result[:3] if result else '[]'}")
             
             # 랭킹 타입 이름 정의
             rank_type_names = {1: "전투력", 2: "매력", 3: "생활력"}
@@ -140,7 +140,7 @@ def fetch_all_ranks(server=None, name=""):
                 "data": result,
                 "retrieved_at": current_time.strftime("%Y-%m-%d %H:%M:%S")
             }
-            logger.info(f"{rank_type_name} 랭킹 조회 완료: 데이터 크기={len(result)}")
+            # logger.info(f"{rank_type_name} 랭킹 조회 완료: 데이터 크기={len(result)}")
             return response
         except Exception as e:
             logger.error(f"Error fetching rank type {rank_type}: {e}")

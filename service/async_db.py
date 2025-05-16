@@ -31,7 +31,7 @@ def async_insert_data(data, server=None, character=None, div=1, retrieved_at_kst
                 processed_retrieved_at = get_current_time()
                 
             result = insert_data(data, server, character, div=div, retrieved_at_kst=processed_retrieved_at)
-            logger.info(f"비동기 DB 업데이트 완료: {result.get('rows_affected')}행이 변경됨")
+            # logger.info(f"비동기 DB 업데이트 완료: {result.get('rows_affected')}행이 변경됨")
         except Exception as e:
             logger.error(f"비동기 DB 업데이트 오류: {e}")
             print(f"Error in async DB update: {e}")
@@ -67,7 +67,6 @@ def async_insert_all_rank_data(all_ranks_data, server=None, character=None):
             dt = datetime.strptime(retrieved_at_kst, "%Y-%m-%d %H:%M:%S")
             # KST 적용
             processed_retrieved_at = pytz.timezone('Asia/Seoul').localize(dt)
-            logger.info(f"all_ranks_data의 문자열 날짜를 datetime으로 변환: {processed_retrieved_at}")
         except Exception as e:
             logger.warning(f"all_ranks_data 날짜 변환 오류: {e}, 현재 시간 사용")
             processed_retrieved_at = get_current_time()
@@ -92,7 +91,7 @@ def async_insert_all_rank_data(all_ranks_data, server=None, character=None):
             data = rank_data.get("data", [])
             if data:  # 데이터가 있는 경우만 DB 업데이트 실행
                 async_insert_data(data, server, character, div=div, retrieved_at_kst=processed_retrieved_at)
-                logger.info(f"{rank_type} 랭킹 데이터 DB 업데이트 요청됨 (div={div}, 저장시간: {processed_retrieved_at})")
+                # logger.info(f"{rank_type} 랭킹 데이터 DB 업데이트 요청됨 (div={div}, 저장시간: {processed_retrieved_at})")
         else:
             logger.info(f"{rank_type} 랭킹 데이터 없음")
     

@@ -119,7 +119,7 @@ def get_all_server_populations():
                     "server_name": server_name, 
                     "population": population
                 })
-                logger.info(f"{server_name} 서버 인구수: {population}")
+                # logger.info(f"{server_name} 서버 인구수: {population}")
             except Exception as e:
                 logger.error(f"{server_name} 서버 인구수 확인 결과 처리 중 오류: {e}")
     

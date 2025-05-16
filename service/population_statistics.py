@@ -33,7 +33,7 @@ def execute_sql_file(file_path):
                     db.execute(text(statement))
             
             db.commit()
-            logger.info(f"SQL 파일 {file_path} 실행 완료")
+            # logger.info(f"SQL 파일 {file_path} 실행 완료")
             return True
     except Exception as e:
         db.rollback()
