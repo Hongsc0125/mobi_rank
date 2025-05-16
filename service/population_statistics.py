@@ -14,46 +14,47 @@ def update_population_statistics():
     try:
         # PostgreSQL 한번의 쿼리로 모든 인구 통계 저장
         sql = """
-        INSERT INTO mabinogi_population_statistics
-            (date, server_name, class_name, population, retrieved_at, div)
-        SELECT
-            CURRENT_DATE,
-            'all' AS server_name,
-            'all' AS class_name,
-            COUNT(*) AS population,
-            (now() AT TIME ZONE 'Asia/Seoul') AS retrieved_at,
-            1 AS div
-        FROM mabinogi_ranking
-        UNION ALL
-        SELECT
-            CURRENT_DATE,
-            'all',
-            class_name,
-            COUNT(*),
-            (now() AT TIME ZONE 'Asia/Seoul'),
-            1
-        FROM mabinogi_ranking
-        GROUP BY class_name
-        UNION ALL
-        SELECT
-            CURRENT_DATE,
-            server_name,
-            'all',
-            COUNT(*),
-            (now() AT TIME ZONE 'Asia/Seoul'),
-            1
-        FROM mabinogi_ranking
-        GROUP BY server_name
-        UNION ALL
-        SELECT
-            CURRENT_DATE,
-            server_name,
-            class_name,
-            COUNT(*),
-            (now() AT TIME ZONE 'Asia/Seoul'),
-            1
-        FROM mabinogi_ranking
-        GROUP BY server_name, class_name;
+            INSERT INTO mabinogi_population_statistics
+                (date, server_name, class_name, population, retrieved_at, div)
+            SELECT
+                CURRENT_DATE,
+                'all' AS server_name,
+                'all' AS class_name,
+                COUNT(*) AS population,
+                (now() AT TIME ZONE 'Asia/Seoul') AS retrieved_at,
+                1 AS div
+            FROM mabinogi_ranking
+            UNION ALL
+            SELECT
+                CURRENT_DATE,
+                'all',
+                class_name,
+                COUNT(*),
+                (now() AT TIME ZONE 'Asia/Seoul'),
+                1
+            FROM mabinogi_ranking
+            GROUP BY class_name
+            UNION ALL
+            SELECT
+                CURRENT_DATE,
+                server_name,
+                'all',
+                COUNT(*),
+                (now() AT TIME ZONE 'Asia/Seoul'),
+                1
+            FROM mabinogi_ranking
+            GROUP BY server_name
+            UNION ALL
+            SELECT
+                CURRENT_DATE,
+                server_name,
+                class_name,
+                COUNT(*),
+                (now() AT TIME ZONE 'Asia/Seoul'),
+                1
+            FROM mabinogi_ranking
+            GROUP BY server_name, class_name
+            ON CONFLICT (date, server_name, class_name, div) DO NOTHING;
         """
         
         logger.info("인구수 통계 집계 쿼리 실행 시작")
