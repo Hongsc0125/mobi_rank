@@ -99,14 +99,45 @@
     const jobPopulations = {{ job_populations|tojson }};
     const jobPercentages = {{ job_percentages|tojson }};
 
-    // 막대 그라데이션
-    const gradients = jobNames.map((_, i) => {
-      const hue = Math.round(i * 360 / jobNames.length);
-      const grad = ctx.createLinearGradient(0, 0, 400, 0);
-      grad.addColorStop(0, `hsl(${hue}, 80%, 70%)`);
-      grad.addColorStop(1, `hsl(${hue}, 80%, 50%)`);
-      return grad;
-    });
+    // 직업별 카테고리와 색상 테마 정의
+    const colors = {
+      // 마법계열 (파랑계열)
+      "화염술사": "#4285F4",
+      "빙결술사": "#5E97F6",
+      "마법사": "#7BAAF7",
+      "견습 마법사": "#A8C7FA",
+      
+      // 궁수계열 (초록계열)
+      "석궁사수": "#34A853",
+      "장궁병": "#57BB8A",
+      "궁수": "#7DCFA9",
+      "견습 궁수": "#A9E2C9",
+      
+      // 전투계열 (빨강계열)
+      "검술사": "#EA4335",
+      "듀얼블레이드": "#EB6859",
+      "대검전사": "#F08E85",
+      "전사": "#F5B5B0",
+      "견습 전사": "#FAD7D4",
+      
+      // 수도/힐러 계열 (황색계열)
+      "수도사": "#FBBC05",
+      "힐러": "#FCD259",
+      "사제": "#FFE297",
+      "견습 힐러": "#FFF0CE",
+      
+      // 기타 계열 (회색/보라계열)
+      "도적": "#9575CD",
+      "격투가": "#B39DDB",
+      "악사": "#A1887F",
+      "댄서": "#90A4AE",
+      "음유시인": "#78909C",
+      "견습 음유시인": "#AEBEC7",
+      "견습 도적": "#C5CAE9"
+    };
+    
+    // 직업별 색상 매핑 (undefined인 경우 기본색상)
+    const getColor = (jobName) => colors[jobName] || "#607D8B";
 
     const data = {
       labels: jobNames,
@@ -114,7 +145,7 @@
         label: '인구수',
         data: jobPopulations,
         percentages: jobPercentages,
-        backgroundColor: gradients,
+        backgroundColor: jobNames.map(getColor),
         borderRadius: 8,
         borderSkipped: false
       }]
