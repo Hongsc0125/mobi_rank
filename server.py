@@ -12,6 +12,7 @@ from service.background_tasks import start_background_tasks
 from service.db_session import engine
 import os
 from datetime import datetime
+from service.population_statistics import update_population_statistics
 
 # Configure logging
 import sys
@@ -129,7 +130,6 @@ def get_population():
 @app.get("/force-population-stats", summary="인구 통계 강제 저장")
 def force_population_statistics():
     try:
-        from service.population_statistics import update_population_statistics
         start_time = datetime.now()
         result = update_population_statistics()
         end_time = datetime.now()

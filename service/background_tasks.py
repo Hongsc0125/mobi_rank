@@ -167,7 +167,7 @@ def update_population_data():
                 print(f"[{current_time.strftime('%Y-%m-%d %H:%M:%S KST')}] 인구수 데이터 업데이트 완료")
                 
                 # 인구수 통계 수집 및 DB 저장
-                update_population_statistics()
+                # update_population_statistics()
             
             # 1시간 대기
             time.sleep(3600)  # 1시간 = 3600초
@@ -179,39 +179,47 @@ def update_population_data():
             time.sleep(600)
 
 def update_population_statistics_task():
-    """인구수 통계 데이터를 1시간마다 업데이트하는 백그라운드 작업
-    1시간 이내에 이미 업데이트한 이력이 있으면 갱신을 스킵합니다.
+    """인구수 통계 데이터를 매일 00시(한국 시간)에 업데이트하는 백그라운드 작업
+    매일 자정 시간에 1회만 실행합니다.
     """
-    # 마지막 업데이트 시간 추적
-    last_stats_update = None
+    # 마지막 업데이트 시간 추적 (날짜 기준)
+    last_update_date = None
     
     while True:
         try:
             # 현재 시간(KST)
             current_time = get_current_time()
+            current_date = current_time.date()
             
-            # 1시간 이내 업데이트 이력이 있는지 확인
-            if last_stats_update and (current_time - last_stats_update).total_seconds() < 3600:
-                one_hour_ago = (current_time - timedelta(hours=1)).strftime('%Y-%m-%d %H:%M:%S KST')
-                print(f"[{current_time.strftime('%Y-%m-%d %H:%M:%S KST')}] 인구수 통계 데이터가 최근({one_hour_ago} 이후) 업데이트되었으므로 스킵합니다.")
-                # 다음 업데이트 시간까지 대기
-                remaining_time = 3600 - (current_time - last_stats_update).total_seconds()
-                time.sleep(max(60, remaining_time))  # 최소 1분 이상 대기
+            # 오늘 이미 업데이트했는지 확인
+            if last_update_date == current_date:
+                print(f"[{current_time.strftime('%Y-%m-%d %H:%M:%S KST')}] 오늘({current_date}) 이미 인구 통계를 업데이트했으므로 스킵합니다.")
+                time.sleep(1800)  # 30분 후 다시 확인
                 continue
             
-            # 1시간 이상 지났거나 처음 실행이면 데이터 갱신
-            print(f"[{current_time.strftime('%Y-%m-%d %H:%M:%S KST')}] 인구수 통계 데이터 업데이트 시작...")
-            result = update_population_statistics()
-            
-            if result:
-                print(f"[{current_time.strftime('%Y-%m-%d %H:%M:%S KST')}] 인구수 통계 데이터 업데이트 완료")
-                # 업데이트 시간 기록
-                last_stats_update = current_time
-            else:
-                print(f"[{current_time.strftime('%Y-%m-%d %H:%M:%S KST')}] 인구수 통계 데이터 업데이트 실패")
+            # 00:00~00:10 사이에만 실행 (공서버는 결군 정각에 정확하게 실행되지 않을 수 있음)
+            if current_time.hour == 0 and current_time.minute < 10:
+                print(f"[{current_time.strftime('%Y-%m-%d %H:%M:%S KST')}] 인구수 통계 데이터 업데이트 시작...")
+                result = update_population_statistics()
                 
-            # 1시간 대기
-            time.sleep(3600)  # 1시간 = 3600초
+                if result:
+                    print(f"[{current_time.strftime('%Y-%m-%d %H:%M:%S KST')}] 인구수 통계 데이터 업데이트 완료")
+                    # 오늘 업데이트 완료 표시
+                    last_update_date = current_date
+                    
+                    # 다음 시간대 까지 충분히 잠 (현재가 00시대면 다음 00시까지 대기)
+                    time.sleep(3600)  # 1시간 대기
+                else:
+                    print(f"[{current_time.strftime('%Y-%m-%d %H:%M:%S KST')}] 인구수 통계 데이터 업데이트 실패")
+                    time.sleep(300)  # 5분 후 재시도
+            else:
+                # 다음 00시 가까워지면 더 확인 빈도 높임
+                minutes_to_midnight = ((23 - current_time.hour) * 60) + (60 - current_time.minute)
+                
+                if minutes_to_midnight < 30:  # 00시 30분 전이면
+                    time.sleep(300)  # 5분마다 확인
+                else:
+                    time.sleep(1800)  # 그 외에는 30분마다 확인
             
         except Exception as e:
             print(f"인구수 통계 업데이트 오류: {e}")
