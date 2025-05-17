@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>마비노기 직업별 인구수 분포</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2"></script>
+  <style>
+    body {
+      font-family: 'Poppins', sans-serif;
+      background: linear-gradient(135deg, #ece9e6 0%, #ffffff 100%);
+      margin: 0;
+      padding: 20px;
+      color: #333;
+    }
+    .container {
+      max-width: 1000px;
+      margin: 0 auto;
+      background: #fff url('https://www.transparenttextures.com/patterns/diamond-upholstery.png');
+      border: 1px solid #e0e0e0;
+      box-shadow: 0 16px 32px rgba(0,0,0,0.08);
+      border-radius: 12px;
+      padding: 20px;
+    }
+    h1 {
+      text-align: center;
+      font-size: 24px;
+      letter-spacing: 1px;
+      margin-bottom: 20px;
+      color: #333;
+    }
+    .chart-container {
+      position: relative;
+      margin-bottom: 30px;
+      background: #fbfbfb;
+      border-radius: 12px;
+      padding: 16px;
+      box-shadow: inset 0 2px 4px rgba(0,0,0,0.05);
+      height: {{ job_names|length * 40 }}px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 20px;
+    }
+    th, td {
+      padding: 8px;
+      font-size: 14px;
+      border-bottom: 1px solid #e0e0e0;
+    }
+    th {
+      background: #f0f0f0;
+      text-align: left;
+    }
+    .footer {
+      text-align: center;
+      margin-top: 15px;
+      font-size: 12px;
+      color: #888;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>마비노기 직업별 인구수 분포 ({{ date }})</h1>
+    <div class="chart-container">
+      <canvas id="jobChart"></canvas>
+    </div>
+    <table>
+      <thead>
+        <tr>
+          <th>순위</th>
+          <th>직업</th>
+          <th>인구수</th>
+          <th>비율</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for job in job_data %}
+        <tr>
+          <td>{{ loop.index }}</td>
+          <td>{{ job.name }}</td>
+          <td>{{ job.population_formatted }} 명</td>
+          <td>{{ job.percentage|round(2) }}%</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    <div class="footer">생성일시: {{ timestamp }}</div>
+  </div>
+
+  <script>
+    // DataLabels 플러그인 등록
+    Chart.register(ChartDataLabels);
+
+    const ctx = document.getElementById('jobChart').getContext('2d');
+    const jobNames       = {{ job_names|tojson }};
+    const jobPopulations = {{ job_populations|tojson }};
+    const jobPercentages = {{ job_percentages|tojson }};
+
+    // 막대 그라데이션
+    const gradients = jobNames.map((_, i) => {
+      const hue = Math.round(i * 360 / jobNames.length);
+      const grad = ctx.createLinearGradient(0, 0, 400, 0);
+      grad.addColorStop(0, `hsl(${hue}, 80%, 70%)`);
+      grad.addColorStop(1, `hsl(${hue}, 80%, 50%)`);
+      return grad;
+    });
+
+    const data = {
+      labels: jobNames,
+      datasets: [{
+        label: '인구수',
+        data: jobPopulations,
+        percentages: jobPercentages,
+        backgroundColor: gradients,
+        borderRadius: 8,
+        borderSkipped: false
+      }]
+    };
+
+    const config = {
+      type: 'bar',
+      data: data,
+      options: {
+        indexAxis: 'y',
+        maintainAspectRatio: false,
+        responsive: true,
+        layout: {
+          // 위쪽 여백을 충분히 주어 맨 위 바가 잘리지 않게 합니다
+          padding: { top: 30 }
+        },
+        animation: {
+          duration: 1200,
+          easing: 'easeOutQuint'
+        },
+        scales: {
+          x: {
+            beginAtZero: true,
+            grid: { color: 'rgba(0,0,0,0.03)' },
+            ticks: {
+              color: '#555',
+              font: { family: "'Poppins', sans-serif" }
+            }
+          },
+          y: {
+            // offset: true 로 카테고리 축을 살짝 밀어냅니다
+            offset: true,
+            grid: { display: false },
+            ticks: {
+              color: '#555',
+              font: { family: "'Poppins', sans-serif" },
+              autoSkip: false
+            }
+          }
+        },
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            backgroundColor: 'rgba(0,0,0,0.8)',
+            titleColor: '#fff',
+            bodyColor: '#fff',
+            padding: 10,
+            cornerRadius: 4,
+            boxPadding: 6
+          },
+          datalabels: {
+            // 클리핑 비활성화해서 맨 위 라벨도 잘리지 않게
+            clip: false,
+            anchor: 'end',
+            align: 'right',
+            formatter: (value, ctx) => {
+              const cnt = value.toLocaleString();
+              const pct = ctx.dataset.percentages[ctx.dataIndex].toFixed(2);
+              return `${cnt}명  (${pct}%)`;
+            },
+            font: { family: "'Poppins', sans-serif", weight: '600', size: 12 },
+            color: '#333',
+            offset: 4
+          }
+        }
+      },
+      // Canvas 그림자 효과 플러그인
+      plugins: [{
+        id: 'shadowPlugin',
+        beforeDatasetDraw(chart) {
+          const ctx = chart.ctx;
+          ctx.save();
+          ctx.shadowColor = 'rgba(0,0,0,0.1)';
+          ctx.shadowBlur = 8;
+          ctx.shadowOffsetY = 4;
+        },
+        afterDatasetDraw(chart) {
+          chart.ctx.restore();
+        }
+      }]
+    };
+
+    new Chart(ctx, config);
+  </script>
+</body>
+</html>

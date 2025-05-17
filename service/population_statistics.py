@@ -215,192 +215,21 @@ def get_class_population_data(date=None):
 def get_html_template():
     """
     직업별 인구수 통계를 표시할 HTML 템플릿을 반환합니다.
+    templates 디렉토리에서 HTML 파일을 읽어옵니다.
     """
-    return """
-    <!DOCTYPE html>
-    <html lang="ko">
-    <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>마비노기 직업별 인구수 분포</title>
-        <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-        <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2.0.0"></script>
-        <style>
-            body {
-                font-family: 'Malgun Gothic', Arial, sans-serif;
-                background-color: #f5f5f5;
-                margin: 0;
-                padding: 20px;
-                color: #333;
-            }
-            .container {
-                max-width: 1200px;
-                margin: 0 auto;
-                background-color: white;
-                border-radius: 10px;
-                box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
-                padding: 20px;
-            }
-            h1 {
-                text-align: center;
-                color: #2c3e50;
-                margin-bottom: 30px;
-                font-size: 24px;
-            }
-            .chart-container {
-                position: relative;
-                width: 100%;
-                height: 600px;
-                margin: 0 auto;
-            }
-            .timestamp {
-                text-align: center;
-                font-size: 14px;
-                color: #7f8c8d;
-                margin-top: 20px;
-            }
-            .stats-info {
-                text-align: center;
-                margin-bottom: 10px;
-                font-size: 16px;
-                color: #34495e;
-            }
-            table {
-                width: 100%;
-                border-collapse: collapse;
-                margin-top: 30px;
-                box-shadow: 0 2px 3px rgba(0, 0, 0, 0.1);
-            }
-            th, td {
-                padding: 12px 15px;
-                text-align: left;
-                border-bottom: 1px solid #ddd;
-            }
-            th {
-                background-color: #f2f2f2;
-                font-weight: bold;
-            }
-            tr:hover {
-                background-color: #f5f5f5;
-            }
-            .rank-column {
-                width: 60px;
-                text-align: center;
-            }
-            .job-column {
-                width: 150px;
-            }
-            .number-column {
-                text-align: right;
-            }
-            .percent-column {
-                text-align: right;
-                width: 100px;
-            }
-            .footer {
-                margin-top: 30px;
-                text-align: center;
-                font-size: 14px;
-                color: #7f8c8d;
-            }
-        </style>
-    </head>
-    <body>
-        <div class="container">
-            <h1>마비노기 직업별 인구수 분포 ({{ date }})</h1>
-            <div class="stats-info">전체 인구수: {{ total_population_formatted }} 명</div>
-            
-            <div class="chart-container">
-                <canvas id="jobChart"></canvas>
-            </div>
-            
-            <table>
-                <thead>
-                    <tr>
-                        <th class="rank-column">순위</th>
-                        <th class="job-column">직업</th>
-                        <th class="number-column">인구수</th>
-                        <th class="percent-column">비율</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {% for job in job_data %}
-                    <tr>
-                        <td class="rank-column">{{ loop.index }}</td>
-                        <td class="job-column">{{ job.name }}</td>
-                        <td class="number-column">{{ job.population_formatted }} 명</td>
-                        <td class="percent-column">{{ job.percentage|round(2) }}%</td>
-                    </tr>
-                    {% endfor %}
-                </tbody>
-            </table>
-            
-            <div class="timestamp">생성일시: {{ timestamp }}</div>
-            <div class="footer">© MobiRank</div>
-        </div>
+    try:
+        template_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "templates", "class_chart_template.html")
         
-        <script>
-            const ctx = document.getElementById('jobChart').getContext('2d');
+        # 템플릿 파일 읽기
+        with open(template_path, 'r', encoding='utf-8') as template_file:
+            template_content = template_file.read()
             
-            // 색상 배열 정의
-            const colorArray = [
-                '#FF6384', '#36A2EB', '#FFCE56', '#4BC0C0', '#9966FF',
-                '#FF9F40', '#8AC054', '#5D9CEC', '#F5BA45', '#7460EE',
-                '#EC87C0', '#EA5545', '#F46A9B', '#EF9B20', '#EDBF33',
-                '#87BC45', '#27AEEF', '#B33DC6', '#5E5CAD', '#1B9E77',
-                '#D95F02', '#7570B3', '#E7298A', '#66A61E', '#E6AB02'
-            ];
-            
-            // 차트 데이터
-            const data = {
-                labels: {{ job_names|tojson }},
-                datasets: [{
-                    data: {{ job_populations|tojson }},
-                    backgroundColor: colorArray.slice(0, {{ job_names|length }}),
-                    borderWidth: 1,
-                    borderColor: '#fff'
-                }]
-            };
-            
-            // 차트 설정
-            const config = {
-                type: 'pie',
-                data: data,
-                options: {
-                    responsive: true,
-                    maintainAspectRatio: false,
-                    plugins: {
-                        legend: {
-                            position: 'right',
-                            labels: {
-                                font: {
-                                    size: 14
-                                }
-                            }
-                        },
-                        datalabels: {
-                            formatter: (value, ctx) => {
-                                const label = ctx.chart.data.labels[ctx.dataIndex];
-                                const percentage = {{ job_percentages|tojson }}[ctx.dataIndex];
-                                return `${percentage}%`;
-                            },
-                            color: '#fff',
-                            font: {
-                                weight: 'bold',
-                                size: 14
-                            }
-                        }
-                    }
-                },
-                plugins: [ChartDataLabels]
-            };
-            
-            // 차트 생성
-            const jobChart = new Chart(ctx, config);
-        </script>
-    </body>
-    </html>
-    """
+        logger.info(f"HTML 템플릿 파일 로드 성공: {template_path}")
+        return template_content
+    except Exception as e:
+        logger.error(f"HTML 템플릿 파일 로드 실패: {e}")
+        return None
+
 
 def take_screenshots(html_content, base_output_path):
     """
