@@ -249,5 +249,5 @@ def get_class_chart():
 @app.on_event("startup")
 def startup_event():
     logger.info("Starting FastAPI server")
-    # start_background_tasks()
+    start_background_tasks()
     logger.info("Background tasks started")
