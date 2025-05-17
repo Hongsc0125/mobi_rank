@@ -12,7 +12,8 @@ from service.background_tasks import start_background_tasks
 from service.db_session import engine
 import os
 from datetime import datetime
-from service.population_statistics import update_population_statistics
+from service.population_statistics import update_population_statistics, generate_class_pie_chart, get_latest_class_chart
+from fastapi.responses import FileResponse, JSONResponse
 
 # Configure logging
 import sys
@@ -154,10 +155,99 @@ def force_population_statistics():
         raise HTTPException(status_code=500, detail=f"서버 에러: {str(e)}")
 
 
+# 직업별 인구 통계 파이차트 강제 생성 엔드포인트
+@app.get("/force-class-chart", summary="직업별 인구 통계 파이차트 강제 생성")
+def force_class_chart():
+    try:
+        start_time = datetime.now()
+        filename, job_data = generate_class_pie_chart()
+        end_time = datetime.now()
+        execution_time = (end_time - start_time).total_seconds()
+        
+        if filename and job_data:
+            logger.info(f"직업별 인구 통계 파이차트 생성 성공. 실행 시간: {execution_time}초, 파일명: {filename}")
+            
+            # JSON 형식으로 응답
+            response_data = {
+                "success": True,
+                "message": "직업별 인구 통계 정보 가져오기 성공",
+                "data": job_data["jobs"],  # 직업별 인구수 데이터
+                "total_population": job_data["total_population"],  # 전체 인구수
+                "imageUrl": f"/images/{filename}",  # 전체 이미지 URL
+                "chartImageUrl": f"/images/{job_data['chart_filename']}",  # 차트 이미지 URL
+                "tableImageUrl": f"/images/{job_data['table_filename']}",  # 테이블 이미지 URL
+                "timestamp": job_data["timestamp"],  # 타임스태프
+                "execution_time": f"{execution_time:.2f}초",  # 실행 시간
+                "executed_at": start_time.strftime("%Y-%m-%d %H:%M:%S KST"),  # 실행 시간
+                "from_cache": False  # 캠시 여부
+            }
+            
+            return response_data
+        else:
+            logger.error("직업별 인구 통계 파이차트 생성 실패")
+            return {
+                "success": False,
+                "message": "직업별 인구 통계 파이차트 생성 실패. 서버 로그를 확인해주세요."
+            }
+    except Exception as e:
+        logger.error(f"직업별 인구 통계 파이차트 생성 엔드포인트 오류: {e}")
+        raise HTTPException(status_code=500, detail=f"서버 오류: {str(e)}")
+
+
+# 최신 직업별 인구 통계 파이차트 조회 엔드포인트
+@app.get("/class-chart", summary="최신 직업별 인구 통계 파이차트 조회")
+def get_class_chart():
+    try:
+        # 최신 파이차트 파일명 가져오기
+        filename = get_latest_class_chart()
+        
+        if not filename:
+            # 파일이 없으면 새로 생성
+            logger.info("최신 직업별 인구 통계 파이차트가 없어 새로 생성합니다.")
+            filename = generate_class_pie_chart()
+            
+            if not filename:
+                logger.error("직업별 인구 통계 파이차트 생성 실패")
+                return JSONResponse(
+                    status_code=404,
+                    content={
+                        "success": False,
+                        "message": "직업별 인구 통계 파이차트를 찾을 수 없으며, 생성에도 실패했습니다."
+                    }
+                )
+        
+        # 이미지 파일 경로
+        image_path = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)),
+            "images",
+            filename
+        )
+        
+        if not os.path.exists(image_path):
+            logger.error(f"파일을 찾을 수 없음: {image_path}")
+            return JSONResponse(
+                status_code=404,
+                content={
+                    "success": False,
+                    "message": "직업별 인구 통계 파이차트 파일을 찾을 수 없습니다."
+                }
+            )
+        
+        # 이미지 파일 반환
+        return FileResponse(
+            image_path,
+            media_type="image/png",
+            filename=filename
+        )
+    except Exception as e:
+        logger.error(f"직업별 인구 통계 파이차트 조회 엔드포인트 오류: {e}")
+        raise HTTPException(status_code=500, detail=f"서버 에러: {str(e)}")
+
+
+
 # Start background tasks when the server starts
 @app.on_event("startup")
 def startup_event():
     logger.info("Starting FastAPI server")
-    # Start background tasks
-    start_background_tasks()
+    # start_background_tasks()
     logger.info("Background tasks started")

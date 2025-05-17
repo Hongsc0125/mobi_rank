@@ -12,3 +12,7 @@ psycopg2-binary
 psutil>=5.9.0
 pytz
 matplotlib
+pandas
+jinja2
+Pillow
+selenium-wire
