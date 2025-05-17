@@ -1231,6 +1231,7 @@ def sequential_rank_crawl_worker(server_num, div=1):
                             display_stats_dashboard()  # 현재 상태 표시
                             time.sleep(PAUSE_DURATION)
                             continue
+                        
                     # 크롤링 중이면 안전한지 확인
                     elif not is_crawling_safe(server_name, collector_size):
                         logger.warning(f"[큐 관리] 서버 {server_name} 크롤링 일시 중단 시작: 콜렉터 크기={collector_size}, DB 큐 크기={queue_size}")
@@ -1248,8 +1249,20 @@ def sequential_rank_crawl_worker(server_num, div=1):
                 
                 # 크롤링이 일시 중단된 경우 처리
                 if crawling_paused[server_name]:
-                    time.sleep(PAUSE_DURATION)  # 대기 후 다시 상태 확인
-                    continue
+                    # DB 큐 및 콜렉터 크기 확인
+                    queue_size = db_queue.qsize()
+                    collector_size = len(collector.batch) if hasattr(collector, 'batch') else 0
+                    
+                    # 재개 가능한지 확인
+                    if queue_size <= SAFE_QUEUE_SIZE and not db_stats.get("paused", False):
+                        logger.info(f"[큐 관리] 서버 {server_name} 크롤링 재개: 큐 크기={queue_size} <= {SAFE_QUEUE_SIZE}")
+                        crawling_paused[server_name] = False
+                        continue  # 크롤링 재개
+                    else:
+                        # 아직 재개 조건이 안 되면 대기
+                        logger.warning(f"[큐 관리] 서버 {server_name} 크롤링 계속 중단: 큐 크기={queue_size}, 안전 크기={SAFE_QUEUE_SIZE}")
+                        time.sleep(PAUSE_DURATION)
+                        continue
                 
                 # 서버의 캐릭터 목록 확인
                 with server_characters_lock:
