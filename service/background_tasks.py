@@ -270,7 +270,13 @@ def update_population_statistics_task():
             traceback.print_exc()
             # 오류 발생 시 15분 후 재시도
             time.sleep(900)
-    """Start all background tasks in separate threads"""
+
+
+def start_background_tasks():
+    """
+    모든 백그라운드 작업을 시작합니다.
+    각 작업은 도그형으로 실행됩니다.
+    """
     # 크롬 드라이버 풀 초기화
     from service.driver_pool import get_driver_pool
     driver_pool = get_driver_pool()  # 3개의 크롬 드라이버를 상시 유지하는 풀 초기화
