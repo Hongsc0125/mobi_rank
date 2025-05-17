@@ -157,26 +157,31 @@ def force_population_statistics():
 
 # 직업별 인구 통계 파이차트 강제 생성 엔드포인트
 @app.get("/force-class-chart", summary="직업별 인구 통계 파이차트 강제 생성")
+@app.get("/force_class_chart", summary="직업별 인구 통계 파이차트 강제 생성")
 def force_class_chart():
     try:
         start_time = datetime.now()
-        filename, job_data = generate_class_pie_chart()
+        # 직업별 인구 통계 캐시 업데이트
+        from service.population_statistics import update_class_population_cache
+        result = update_class_population_cache()
         end_time = datetime.now()
         execution_time = (end_time - start_time).total_seconds()
         
-        if filename and job_data:
-            logger.info(f"직업별 인구 통계 파이차트 생성 성공. 실행 시간: {execution_time}초, 파일명: {filename}")
+        if result:
+            # 캐시에서 최신 데이터 가져오기
+            from service.population_statistics import _class_population_cache as cache
+            logger.info(f"직업별 인구 통계 파이차트 생성 성공. 실행 시간: {execution_time}초")
             
             # JSON 형식으로 응답
             response_data = {
                 "success": True,
                 "message": "직업별 인구 통계 정보 가져오기 성공",
-                "data": job_data["jobs"],  # 직업별 인구수 데이터
-                "total_population": job_data["total_population"],  # 전체 인구수
-                "imageUrl": f"/images/{filename}",  # 전체 이미지 URL
-                "chartImageUrl": f"/images/{job_data['chart_filename']}",  # 차트 이미지 URL
-                "tableImageUrl": f"/images/{job_data['table_filename']}",  # 테이블 이미지 URL
-                "timestamp": job_data["timestamp"],  # 타임스태프
+                "data": cache["jobs"],  # 직업별 인구수 데이터
+                "total_population": cache["total_population"],  # 전체 인구수
+                "imageUrl": cache["imageUrl"],  # 전체 이미지 URL
+                "chartImageUrl": cache["chartImageUrl"],  # 차트 이미지 URL
+                "tableImageUrl": cache["tableImageUrl"],  # 테이블 이미지 URL
+                "timestamp": cache["timestamp"],  # 타임스태프
                 "execution_time": f"{execution_time:.2f}초",  # 실행 시간
                 "executed_at": start_time.strftime("%Y-%m-%d %H:%M:%S KST"),  # 실행 시간
                 "from_cache": False  # 캠시 여부
@@ -196,53 +201,29 @@ def force_class_chart():
 
 # 최신 직업별 인구 통계 파이차트 조회 엔드포인트
 @app.get("/class-chart", summary="최신 직업별 인구 통계 파이차트 조회")
+@app.get("/class_chart", summary="최신 직업별 인구 통계 파이차트 조회")
 def get_class_chart():
     try:
-        # 최신 파이차트 파일명 가져오기
-        filename = get_latest_class_chart()
+        # 캐시된 데이터 가져오기
+        from service.population_statistics import get_latest_class_chart
+        result = get_latest_class_chart()
         
-        if not filename:
-            # 파일이 없으면 새로 생성
-            logger.info("최신 직업별 인구 통계 파이차트가 없어 새로 생성합니다.")
-            filename = generate_class_pie_chart()
+        if not result:
+            logger.warning("직업별 인구 통계 파이차트 데이터가 없습니다.")
+            return {
+                "success": False,
+                "message": "직업별 인구 통계 데이터가 없습니다.",
+                "imageUrl": None
+            }
             
-            if not filename:
-                logger.error("직업별 인구 통계 파이차트 생성 실패")
-                return JSONResponse(
-                    status_code=404,
-                    content={
-                        "success": False,
-                        "message": "직업별 인구 통계 파이차트를 찾을 수 없으며, 생성에도 실패했습니다."
-                    }
-                )
+        # 직접 직업별 인구 통계 정보 가져오기 성공
+        logger.info(f"직업별 인구 통계 파이차트 조회 성공. 캐시: {result.get('from_cache', False)}")
         
-        # 이미지 파일 경로
-        image_path = os.path.join(
-            os.path.dirname(os.path.abspath(__file__)),
-            "images",
-            filename
-        )
-        
-        if not os.path.exists(image_path):
-            logger.error(f"파일을 찾을 수 없음: {image_path}")
-            return JSONResponse(
-                status_code=404,
-                content={
-                    "success": False,
-                    "message": "직업별 인구 통계 파이차트 파일을 찾을 수 없습니다."
-                }
-            )
-        
-        # 이미지 파일 반환
-        return FileResponse(
-            image_path,
-            media_type="image/png",
-            filename=filename
-        )
+        return result
+            
     except Exception as e:
-        logger.error(f"직업별 인구 통계 파이차트 조회 엔드포인트 오류: {e}")
-        raise HTTPException(status_code=500, detail=f"서버 에러: {str(e)}")
-
+        logger.error(f"직업별 인구 통계 파이차트 조회 중 오류: {e}")
+        raise HTTPException(status_code=500, detail=f"서버 오류: {str(e)}")
 
 
 # Start background tasks when the server starts

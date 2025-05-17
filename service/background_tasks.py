@@ -178,6 +178,50 @@ def update_population_data():
             # 오류 발생 시 10분 후 재시도
             time.sleep(600)
 
+
+def update_class_population_data():
+    """직업별 인구 통계 데이터를 업데이트하는 백그라운드 작업
+    1시간 이내에 이미 업데이트한 이력이 있으면 갱신을 스킵합니다.
+    """
+    from service.population_statistics import _class_population_cache, update_class_population_cache
+    
+    while True:
+        try:
+            # 현재 시간(KST) 가져오기
+            current_time = get_current_time()
+            
+            # 마지막 업데이트 시간 확인
+            last_updated = _class_population_cache.get("last_updated")
+            
+            # 1시간 이내 업데이트 이력이 있는지 확인
+            if last_updated and (current_time - last_updated).total_seconds() < 3600:
+                one_hour_ago = (current_time - timedelta(hours=1)).strftime('%Y-%m-%d %H:%M:%S KST')
+                print(f"[{current_time.strftime('%Y-%m-%d %H:%M:%S KST')}] 직업별 인구 통계가 최근({one_hour_ago} 이후) 업데이트되었으므로 스킵합니다.")
+                # 다음 업데이트 시간까지 대기
+                remaining_time = 3600 - (current_time - last_updated).total_seconds()
+                time.sleep(max(60, remaining_time))  # 최소 1분 이상 대기
+                continue
+            
+            # 1시간 이상 지났거나 처음 실행이면 데이터 갱신
+            print(f"[{current_time.strftime('%Y-%m-%d %H:%M:%S KST')}] 직업별 인구 통계 업데이트 시작...")
+            
+            # 직업별 인구 통계 생성 및 캐시 업데이트
+            result = update_class_population_cache()
+            
+            if result:
+                print(f"[{current_time.strftime('%Y-%m-%d %H:%M:%S KST')}] 직업별 인구 통계 업데이트 완료")
+            else:
+                print(f"[{current_time.strftime('%Y-%m-%d %H:%M:%S KST')}] 직업별 인구 통계 업데이트 실패")
+            
+            # 1시간 대기
+            time.sleep(3600)  # 1시간 = 3600초
+            
+        except Exception as e:
+            print(f"직업별 인구 통계 업데이트 오류: {e}")
+            traceback.print_exc()
+            # 오류 발생 시 10분 후 재시도
+            time.sleep(600)
+
 def update_population_statistics_task():
     """인구수 통계 데이터를 매일 00시(한국 시간)에 업데이트하는 백그라운드 작업
     매일 자정 시간에 1회만 실행합니다.
@@ -226,8 +270,6 @@ def update_population_statistics_task():
             traceback.print_exc()
             # 오류 발생 시 15분 후 재시도
             time.sleep(900)
-
-def start_background_tasks():
     """Start all background tasks in separate threads"""
     # 크롬 드라이버 풀 초기화
     from service.driver_pool import get_driver_pool
@@ -245,6 +287,12 @@ def start_background_tasks():
     population_thread.name = "population-update-thread"
     population_thread.start()
     print("인구수 업데이트 백그라운드 쓰레드 시작됨 (1개 쓰레드)")
+    
+    # 직업별 인구 통계 업데이트 스레드 시작
+    class_population_thread = threading.Thread(target=update_class_population_data, daemon=True)
+    class_population_thread.name = "class-population-update-thread"
+    class_population_thread.start()
+    print("직업별 인구 통계 업데이트 백그라운드 쓰레드 시작됨")
     
     # 인구수 통계 업데이트 스레드 시작
     stats_thread = threading.Thread(target=update_population_statistics_task, daemon=True)

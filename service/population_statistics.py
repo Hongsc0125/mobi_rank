@@ -21,6 +21,19 @@ import chromedriver_autoinstaller
 
 logger = logging.getLogger(__name__)
 
+# 직업별 인구 통계 캐시
+_class_population_cache = {
+    "data": None,          # 직업별 인구 데이터
+    "timestamp": None,     # 타임스탬프
+    "imageUrl": None,      # 전체 이미지 URL
+    "chartImageUrl": None, # 차트 이미지 URL
+    "tableImageUrl": None, # 테이블 이미지 URL
+    "total_population": 0, # 전체 인구수
+    "jobs": [],           # 직업별 인구 데이터 목록
+    "last_updated": None,  # 마지막 업데이트 시간
+    "cache_time": None     # 캐시 시간
+}
+
 def update_population_statistics():
     """
     매일 00시에 전체/직업별/서버별/서버별-직업별 인구수를 통계 테이블에 저장합니다.
@@ -619,13 +632,31 @@ def generate_class_pie_chart():
 
 def get_latest_class_chart():
     """
-    가장 최근에 생성된 직업별 인구수 파이 차트 이미지 파일명을 반환합니다.
+    가장 최근에 생성된 직업별 인구수 파이 차트 데이터를 반환합니다.
+    캐시된 데이터가 있으면 캐시 데이터를 반환하고, 없으면 파일에서 가져옵니다.
     
     Returns:
-        str: 이미지 파일명 또는 None
+        dict: 직업별 인구수 차트 데이터 (캐시된 데이터가 있는 경우) 또는 None
     """
     try:
-        # 이미지 저장 디렉토리
+        # 캐시된 데이터가 있는지 확인
+        if _class_population_cache["data"] and _class_population_cache["imageUrl"]:
+            # 캐시에서 데이터 가져오기
+            logger.info(f"캐시된 직업별 인구수 차트 데이터 반환 (캐시 시간: {_class_population_cache['timestamp']})")
+            
+            return {
+                "success": True,
+                "message": "직업별 인구 통계 정보 가져오기 성공",
+                "data": _class_population_cache["jobs"],
+                "total_population": _class_population_cache["total_population"],
+                "imageUrl": _class_population_cache["imageUrl"],
+                "chartImageUrl": _class_population_cache["chartImageUrl"],
+                "tableImageUrl": _class_population_cache["tableImageUrl"],
+                "timestamp": _class_population_cache["timestamp"],
+                "from_cache": True
+            }
+        
+        # 캐시된 데이터가 없으면 파일에서 가져오기
         image_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "images")
         
         # 디렉토리가 없으면 생성
@@ -642,7 +673,65 @@ def get_latest_class_chart():
         # 파일명 기준으로 정렬하여 가장 최근 파일 찾기 (파일명에 날짜가 포함되어 있음)
         latest_file = sorted(chart_files, reverse=True)[0]
         
-        return latest_file
+        # chart_와 table_ 파일도 찾기
+        base_name = latest_file.split('.')[0]
+        chart_file = f"{base_name}_chart.png"
+        table_file = f"{base_name}_table.png"
+        
+        # 인구수 데이터 다시 생성
+        # 캐시 업데이트 필요 (필요한 경우 직업별 인구수 차트를 다시 생성)
+        logger.info(f"직업별 인구수 차트 이미지 파일 조회: {latest_file}")
+        
+        # 차트 이미지는 있지만 캐시 데이터가 없는 경우 빈 데이터 반환
+        return {
+            "success": True,
+            "message": "직업별 인구 통계 정보 가져오기 성공 (캐시 없음)",
+            "data": [],
+            "total_population": 0,
+            "imageUrl": f"/images/{latest_file}",
+            "chartImageUrl": f"/images/{chart_file}" if os.path.exists(os.path.join(image_dir, chart_file)) else None,
+            "tableImageUrl": f"/images/{table_file}" if os.path.exists(os.path.join(image_dir, table_file)) else None,
+            "timestamp": datetime.now(KST).strftime('%Y-%m-%d %H:%M:%S KST'),
+            "from_cache": False
+        }
     except Exception as e:
-        logger.error(f"최신 직업별 인구수 차트 파일 조회 중 오류: {e}")
+        logger.error(f"최신 직업별 인구수 차트 데이터 조회 중 오류: {e}")
         return None
+
+
+def update_class_population_cache():
+    """
+    직업별 인구 통계 차트를 생성하고 캐시합니다.
+    1시간마다 주기적으로 호출되어 캐시를 갱신합니다.
+    
+    Returns:
+        bool: 성공 여부
+    """
+    try:
+        # 직업별 인구 통계 차트 생성
+        filename, job_data = generate_class_pie_chart()
+        
+        if filename and job_data:
+            # 현재 시간(KST)
+            current_time = get_current_time()
+            timestamp = current_time.strftime('%Y-%m-%d %H:%M:%S KST')
+            
+            # 캐시 업데이트
+            _class_population_cache["data"] = job_data
+            _class_population_cache["timestamp"] = timestamp
+            _class_population_cache["imageUrl"] = f"/images/{filename}"
+            _class_population_cache["chartImageUrl"] = f"/images/{job_data['chart_filename']}"
+            _class_population_cache["tableImageUrl"] = f"/images/{job_data['table_filename']}"
+            _class_population_cache["total_population"] = job_data["total_population"]
+            _class_population_cache["jobs"] = job_data["jobs"]
+            _class_population_cache["last_updated"] = current_time
+            _class_population_cache["cache_time"] = current_time
+            
+            logger.info(f"직업별 인구 통계 차트 캐시 업데이트 완료 ({timestamp})")
+            return True
+        else:
+            logger.error("직업별 인구 통계 차트 생성 실패")
+            return False
+    except Exception as e:
+        logger.error(f"직업별 인구 통계 차트 캐시 업데이트 중 오류: {e}")
+        return False
