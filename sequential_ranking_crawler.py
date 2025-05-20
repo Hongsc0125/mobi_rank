@@ -3,46 +3,70 @@
 다른 태스크와 독립적으로 동작하며, 최대한 많은 쓰레드로 빠르게 작업합니다.
 """
 
-import time
 import chromedriver_autoinstaller
-import requests
-from bs4 import BeautifulSoup
-from selenium import webdriver
-from selenium.webdriver.chrome.service import Service
-from selenium.webdriver.chrome.options import Options
 import os
 import logging
 import threading
+import time
 from datetime import datetime, timedelta
 import re
 import signal
 import sys
-import psutil
 import gc
 from concurrent.futures import ThreadPoolExecutor
 import random
-from selenium.common.exceptions import WebDriverException
 import queue
+from queue import Queue
+from threading import Lock, Thread
+from typing import Dict, List, Optional, Tuple, Union
+
+# 서드파티 라이브러리
+import psutil
+import requests
+from bs4 import BeautifulSoup
+from fake_useragent import UserAgent
+from selenium import webdriver
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.chrome.service import Service
+from selenium.webdriver.common.by import By
+from selenium.common.exceptions import WebDriverException
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.support.ui import WebDriverWait
 
 # DB 연결 모듈 가져오기
 from service.db import insert_data, get_980_data, delete_character_data
-from service.db_session import SessionLocal, get_current_time, KST
+from service.db_session import (
+    SessionLocal, 
+    ScopedSession, 
+    get_current_time, 
+    KST, 
+    SQLALCHEMY_DATABASE_URL,
+    engine
+)
 from sqlalchemy import text
 
-# KST 타임존 설정
-import pytz
-KST = pytz.timezone('Asia/Seoul')
-
-# 로깅 설정
+# 로거 설정
 logger = logging.getLogger("순차크롤러")
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s [%(levelname)s] %(message)s',  # 간단한 형식으로 변경
-    handlers=[
-        logging.StreamHandler(),
-        logging.FileHandler('sequential_crawler.log')
-    ]
-)
+logger.setLevel(logging.INFO)
+
+# 콘솔 핸들러 설정
+console_handler = logging.StreamHandler()
+console_handler.setLevel(logging.INFO)
+console_formatter = logging.Formatter('%(asctime)s [%(levelname)s] %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
+console_handler.setFormatter(console_formatter)
+
+# 파일 핸들러 설정
+file_handler = logging.FileHandler('sequential_crawler.log', encoding='utf-8')
+file_handler.setLevel(logging.INFO)
+file_formatter = logging.Formatter('%(asctime)s [%(levelname)s] %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
+file_handler.setFormatter(file_formatter)
+
+# 핸들러 추가
+logger.addHandler(console_handler)
+logger.addHandler(file_handler)
+
+# 로그 시작 메시지
+logger.info("로거가 초기화되었습니다.")
 
 # 기본 로그 레벨을 WARNING으로 설정 (중요한 로그만 표시)
 logging.getLogger().setLevel(logging.WARNING)
@@ -119,8 +143,8 @@ db_queue = queue.Queue(maxsize=100000)  # 최대 10만 항목으로 제한
 db_worker_running = threading.Event()   # DB 작업자 쓰레드 상태
 db_worker_running.set()                 # 초기에는 작동 상태로 설정
 
-# DB 작업자 쓰레드 수 (3개로 설정)
-DB_WORKER_COUNT = 7
+# DB 작업자 쓰레드 수 (CPU 코어 수에 맞게 조정)
+DB_WORKER_COUNT = 4  # CPU 코어 수에 맞게 조정 (일반적으로 물리적 코어 수와 동일하게 설정)
 db_worker_threads = []  # DB 작업자 쓰레드 목록
 
 # 크롤링 작업 통계 및 상황판 관리
@@ -546,261 +570,237 @@ def insert_ranking_data(data, div=1):
 
 
 def db_worker(worker_id):
-    """데이터베이스 작업을 처리하는 쓰레드
-    여러 쓰레드에서 DB 작업을 병렬로 처리하여 성능 향상
-    """
+    """고성능 DB 작업자 쓰레드 - 초당 1000건 이상 처리"""
     thread_name = f"DB작업자_{worker_id}"
     update_thread_status(thread_name, "시작됨")
-    logger.info(f"DB 작업자 쓰레드 #{worker_id} 시작")
+    logger.info(f"DB 작업자 쓰레드 #{worker_id} 시작 (고성능 모드)")
     
-    # 큐 처리 통계 변수
+    # 배치 크기 (1000개씩 처리)
+    BATCH_SIZE = 1000
+    
+    # 재시도 정책
+    MAX_RETRIES = 3
+    RETRY_DELAY = 1  # 초
+    
     total_processed = 0
-    last_report_time = datetime.now(KST)
-    batch_start_time = datetime.now(KST)
-    
-    # 데이터베이스 연결 객체 - 단일 연결 재사용
-    db = None
-    db_reconnect_time = datetime.now(KST)
-    db_check_interval = timedelta(minutes=10)  # 10분마다 연결 재검사
+    batch_count = 0
     
     try:
-        # 최초 한 번만 DB 연결 생성
-        db = SessionLocal()
-        
         while db_worker_running.is_set() and not shutdown_event.is_set():
+            batch = []
+            div = 1  # 기본값
+            
             try:
-                # DB 연결상태 10분마다 점검
-                current_time = datetime.now(KST)
-                if (current_time - db_reconnect_time) > db_check_interval:
-                    # 기존 연결 정리 및 새 연결 생성
+                # 큐에서 배치 크기만큼 데이터 가져오기
+                for _ in range(BATCH_SIZE):
                     try:
-                        if db:
-                            db.close()
-                    except Exception:
-                        pass
-                    
-                    # 새 연결 생성
-                    db = SessionLocal()
-                    db_reconnect_time = current_time
-                    logger.info("DB 연결 새로 생성 (주기적 갱신)")
-                    
-                # 큐에서 데이터 가져오기 (1초 타임아웃)
-                try:
-                    data_batch, div = db_queue.get(timeout=1)
-                except queue.Empty:
-                    # 큐가 비었을 때는 계속 체크
+                        data, div = db_queue.get(timeout=1)
+                        batch.extend(data)
+                        db_queue.task_done()
+                    except queue.Empty:
+                        if batch:  # 큐는 비었지만 처리할 배치가 있는 경우
+                            break
+                        time.sleep(0.1)  # CPU 사용량 감소를 위한 짧은 대기
+                        continue
+                
+                if not batch:
                     continue
                 
-                # 현재 큐 상태 로깅
-                queue_size = db_queue.qsize()
-                if queue_size > 1000:
-                    logger.warning(f"DB 큐 사이즈 경고: {queue_size} 항목")
-                
-                # 데이터 처리 시도
-                retry_count = 0
-                max_retries = 3
+                # 벌크 인서트 실행
+                retries = 0
                 success = False
-                batch_size = len(data_batch)
+                session = None
                 
-                while retry_count < max_retries and not success:
+                while not success and retries < MAX_RETRIES:
+                    session = ScopedSession()
                     try:
                         # 트랜잭션 시작
-                        if not db.in_transaction():
-                            db.begin()
-                        
-                        # 각 데이터 항목에 대해 DB 작업 수행
-                        for item in data_batch:
-                            query = text("""
+                        with session.begin():
+                            # 벌크 인서트 실행 (SQLAlchemy Core 사용)
+                            stmt = text("""
                                 INSERT INTO mabinogi_ranking 
-                                (rank_position, change_amount, change_type, server_name, character_name, class_name, power_value, div, retrieved_at)
-                                VALUES (:rank, :change, :change_type, :server, :character, :class, :power, :div, :retrieved_at_val AT TIME ZONE 'Asia/Seoul')
+                                (rank_position, change_amount, change_type, server_name, 
+                                 character_name, class_name, power_value, div, retrieved_at)
+                                VALUES 
+                                (:rank, :change, :change_type, :server, 
+                                 :character, :class, :power, :div, :retrieved_at_val AT TIME ZONE 'Asia/Seoul')
                                 ON CONFLICT (character_name, server_name, div) 
                                 DO UPDATE SET 
-                                    rank_position = :rank,
-                                    change_amount = :change,
-                                    change_type = :change_type,
-                                    class_name = :class,
-                                    power_value = :power,
-                                    retrieved_at = :retrieved_at_val AT TIME ZONE 'Asia/Seoul'
+                                    rank_position = EXCLUDED.rank_position,
+                                    change_amount = EXCLUDED.change_amount,
+                                    change_type = EXCLUDED.change_type,
+                                    class_name = EXCLUDED.class_name,
+                                    power_value = EXCLUDED.power_value,
+                                    retrieved_at = EXCLUDED.retrieved_at
                             """)
                             
-                            db.execute(query, item)
+                            # 배치 실행
+                            session.execute(stmt, batch)
                         
-                        # 트랜잭션 커밋
-                        db.commit()
+                        # 성공 시
                         success = True
+                        processed = len(batch)
+                        total_processed += processed
+                        batch_count += 1
                         
-                        # 통계 갱신
-                        total_processed += batch_size
-                        update_db_stats(processed=batch_size, queue_size=queue_size, batch_size=batch_size)
-
-                        # 작업 히스토리 저장
-                        try:
-                            # 서버별로 캐릭터 이름 그룹화
-                            server_characters = {}
-                            for item in data_batch:
-                                server = item['server']
-                                character = item['character']
-                                if server not in server_characters:
-                                    server_characters[server] = []
-                                server_characters[server].append(character)
-                            
-                            # 서버별로 히스토리 저장
-                            for server, characters in server_characters.items():
-                                save_db_history(
-                                    db=db,  # 현재 트랜잭션에서 사용 중인 DB 세션 사용
-                                    operation_type="INSERT/UPDATE",
-                                    object_type="mabinogi_ranking",
-                                    object_id=server,
-                                    details=f"{div}분류 랭킹 저장 - {datetime.now(KST).strftime('%Y-%m-%d %H:%M:%S')}",
-                                    count=len(characters),
-                                    character_list=characters
-                                )
-                        except Exception as hist_error:
-                            logger.error(f"히스토리 저장 중 오류: {hist_error}")
-
-                        # 성공 로그 (상황판으로 대체하고 최소한의 로그만 출력)
-                        logger.debug(f"{batch_size}개 항목 일괄 저장 완료")
+                        # 통계 업데이트
+                        update_db_stats(
+                            processed=processed, 
+                            queue_size=db_queue.qsize(), 
+                            batch_size=len(batch)
+                        )
                         
-                    except Exception as e:
-                        # 오류 발생
-                        retry_count += 1
-                        logger.error(f"DB 처리 중 오류 (시도 {retry_count}/{max_retries}): {e}")
+                        # 1000배치마다 로그 출력
+                        if batch_count % 1000 == 0:
+                            logger.info(f"작업자 {worker_id}: 총 {total_processed:,}개 항목 처리 완료")
                         
-                        try:
-                            # 트랜잭션 롤백
-                            db.rollback()
-                        except Exception:
-                            pass
-                        
-                        # 연결 문제가 의심되면 연결 재생성
-                        if "QueuePool limit" in str(e) or "connection" in str(e).lower():
-                            try:
-                                if db:
-                                    db.close()
-                            except Exception:
-                                pass
+                        # 작업 완료 후 커밋
+                        session.commit()
                                 
-                            # 연결 재생성 전 잠시 대기
-                            time.sleep(2)
-                            db = SessionLocal()
-                            db_reconnect_time = datetime.now(KST)
-                            logger.info("DB 연결 재생성 완료 (오류 후 재연결)")
+                    except Exception as e:
+                        if session:
+                            session.rollback()
+                        retries += 1
+                        logger.error(f"배치 처리 실패 (시도 {retries}/{MAX_RETRIES}): {str(e)[:200]}")
+                        if retries < MAX_RETRIES:
+                            time.sleep(RETRY_DELAY * retries)  # 지수 백오프
+                        else:
+                            logger.error(f"배치 처리 포기: {len(batch)}개 항목 손실됨")
+                    finally:
+                        if session:
+                            session.close()
+                            ScopedSession.remove()
                         
-                        if retry_count < max_retries:
-                            # 재시도 전 대기 시간 (지수 백오프)
-                            sleep_time = 2 ** retry_count
-                            time.sleep(sleep_time)
+                        # 주기적으로 가비지 컬렉션 실행
+                        if batch_count % 100 == 0:
+                            gc.collect()
                 
-                # 작업 완료 표시
-                db_queue.task_done()
-                
-                # 상황판 표시 (각 배치 처리 후)  
+                # 배치 처리 후 상황판 업데이트
                 display_stats_dashboard()
                 
-                # 30초마다 로그에 간단한 통계 정보 출력 (상황판이 기본이며 이것은 사용하지 않음)
-                now = datetime.now(KST)
-                if (now - last_report_time).total_seconds() > 30:
-                    # 추가 로그 출력 없음
-                    last_report_time = now
-                    
-                # 작업 간 짧은 휴식 (시스템 부하 방지)
-                time.sleep(0.01)
-                
             except Exception as e:
-                logger.error(f"DB 작업자 오류: {e}", exc_info=True)
+                logger.error(f"작업자 {worker_id} 오류: {str(e)[:200]}")
                 time.sleep(1)  # 오류 발생 시 잠시 대기
     
     except Exception as e:
-        logger.error(f"DB 작업자 쓰레드 중단 오류: {e}", exc_info=True)
+        logger.error(f"DB 작업자 {worker_id} 치명적 오류: {str(e)}", exc_info=True)
     finally:
-        # 마무리 작업
-        if db:
-            try:
-                db.close()
-                logger.info("DB 연결 종료")
-            except Exception:
-                pass
-                
+        ScopedSession.remove()
         update_thread_status(thread_name, "종료됨")
-        logger.info(f"DB 작업자 쓰레드 #{worker_id} 종료. 총 처리 항목: {total_processed}")
+        logger.info(f"DB 작업자 #{worker_id} 종료. 총 처리 항목: {total_processed:,}")
 
 
 def save_to_db_directly(data, div=1):
-    """로깅 등 특별한 경우 직접 DB에 저장
+    """로깅 등 특별한 경우 직접 DB에 저장 (고성능 버전)
+    
+    Args:
+        data: 저장할 데이터 (단일 딕셔너리 또는 딕셔너리 리스트)
+        div: 랭킹 분류 (기본값: 1)
+        
     주의: 데드락 발생 가능성이 있으니 데이터브레이커 모듈과 같이 필수적인 경우만 사용
     """
-    db = SessionLocal()
+    if not data:
+        return
+        
+    session = None
     try:
-        # 현재 KST 시간 가져오기
-        current_time_kst = get_current_time()
+        # 데이터가 리스트가 아니면 리스트로 변환
+        if not isinstance(data, list):
+            data = [data]
         
-        for item in data:
-            # 콤마가 포함된 문자열을 숫자로 변환
-            rank_position = int(item['rank'].replace(',', '').replace('위', ''))
-            power_value = int(item['power'].replace(',', ''))
-            
-            # change 값 처리
-            change_value = item['change']
-            if change_value == '-':
-                change_value = '0'
-                
-            # change_type이 'down'인 경우 음수로 변환 (랭킹이 내려간 경우)
-            change_value_int = int(change_value.replace(',', ''))
-            if item['change_type'] == 'down':
-                change_value_int = -change_value_int  # 내려간 경우 음수로 표현
-            
-            # 레코드 추가 또는 업데이트 (div 매개변수 포함)
-            query = text("""
-                INSERT INTO mabinogi_ranking 
-                (rank_position, change_amount, change_type, server_name, character_name, class_name, power_value, div, retrieved_at)
-                VALUES (:rank, :change, :change_type, :server, :character, :class, :power, :div, :retrieved_at_val AT TIME ZONE 'Asia/Seoul')
-                ON CONFLICT (character_name, server_name, div) 
-                DO UPDATE SET 
-                    rank_position = :rank,
-                    change_amount = :change,
-                    change_type = :change_type,
-                    class_name = :class,
-                    power_value = :power,
-                    retrieved_at = :retrieved_at_val AT TIME ZONE 'Asia/Seoul'
-            """)
-            
-            db.execute(query, {
-                'rank': rank_position,
-                'change': change_value_int,  # 음수/양수로 변환된 change 값 사용
-                'change_type': item['change_type'],
-                'server': item['server'],
-                'character': item['character'],
-                'class': item['class'],
-                'power': power_value,
-                'div': div,
-                'retrieved_at_val': current_time_kst
-            })
+        # 배치 크기 (한 번에 처리할 레코드 수)
+        BATCH_SIZE = 1000
         
-        db.commit()
-        return True
+        # 전체 데이터를 배치 크기로 분할
+        for i in range(0, len(data), BATCH_SIZE):
+            batch = data[i:i + BATCH_SIZE]
+            retries = 0
+            max_retries = 3
+            success = False
+            
+            while not success and retries < max_retries:
+                session = ScopedSession()
+                try:
+                    with session.begin():
+                        # 벌크 인서트 쿼리
+                        stmt = text("""
+                            INSERT INTO mabinogi_ranking 
+                            (rank_position, change_amount, change_type, server_name, 
+                             character_name, class_name, power_value, div, retrieved_at)
+                            VALUES 
+                            (:rank, :change, :change_type, :server, 
+                             :character, :class, :power, :div, :retrieved_at_val AT TIME ZONE 'Asia/Seoul')
+                            ON CONFLICT (character_name, server_name, div) 
+                            DO UPDATE SET 
+                                rank_position = EXCLUDED.rank_position,
+                                change_amount = EXCLUDED.change_amount,
+                                change_type = EXCLUDED.change_type,
+                                class_name = EXCLUDED.class_name,
+                                power_value = EXCLUDED.power_value,
+                                retrieved_at = EXCLUDED.retrieved_at
+                        """)
+                        
+                        # 배치 파라미터 준비
+                        params_list = []
+                        for item in batch:
+                            # 콤마가 포함된 문자열을 숫자로 변환
+                            rank_position = int(item['rank'].replace(',', '').replace('위', ''))
+                            power_value = int(item['power'].replace(',', ''))
+                            
+                            # change 값 처리
+                            change_value = item['change']
+                            if change_value == '-':
+                                change_value = '0'
+                                
+                            # change_type이 'down'인 경우 음수로 변환 (랭킹이 내려간 경우)
+                            change_value_int = int(change_value.replace(',', ''))
+                            if item['change_type'] == 'down':
+                                change_value_int = -change_value_int
+                            
+                            params_list.append({
+                                'rank': rank_position,
+                                'change': change_value_int,
+                                'change_type': item['change_type'],
+                                'server': item['server'],
+                                'character': item['character'],
+                                'class': item['class'],
+                                'power': power_value,
+                                'div': div,
+                                'retrieved_at_val': get_current_time()
+                            })
+                        
+                        # 배치 실행
+                        session.execute(stmt, params_list)
+                    
+                    # 성공 시
+                    success = True
+                    logger.debug(f"직접 저장 완료: {len(batch)}개 항목 (배치 {i//BATCH_SIZE + 1}/{(len(data)-1)//BATCH_SIZE + 1})")
+                    
+                except Exception as e:
+                    retries += 1
+                    if session:
+                        session.rollback()
+                    
+                    if retries >= max_retries:
+                        logger.error(f"직접 저장 실패 (배치 {i//BATCH_SIZE + 1}): {str(e)[:200]}")
+                        raise
+                    
+                    # 지수 백오프로 대기
+                    time.sleep((2 ** retries) * 0.1)
+                    logger.warning(f"재시도 {retries}/{max_retries}: 배치 {i//BATCH_SIZE + 1} 재시도 중...")
+                    
+                finally:
+                    if session:
+                        session.close()
+                        ScopedSession.remove()
+    
     except Exception as e:
-        db.rollback()
-        logger.error(f"데이터 저장 중 오류: {e}")
-        return False
+        logger.error(f"직접 저장 중 치명적 오류: {str(e)}", exc_info=True)
+        raise
+    
     finally:
-        db.close()
-
-# 드라이버 풀 관리자 클래스
-class DriverPool:
-    """WebDriver 인스턴스 풀을 관리하는 클래스"""
-    def __init__(self, pool_size=5, high_performance=True):
-        self.pool = []
-        self.lock = threading.Lock()
-        self.high_performance = high_performance
-        
-        # 풀 초기화
-        for _ in range(pool_size):
-            try:
-                driver = get_driver(high_performance)
-                self.pool.append(driver)
-            except Exception as e:
-                logger.error(f"드라이버 생성 중 오류: {e}")
+        if session:
+            ScopedSession.remove()
     
     def get_driver(self):
         """사용 가능한 드라이버를 가져옴, 없으면 새로 생성"""

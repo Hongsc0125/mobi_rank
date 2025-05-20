@@ -1,14 +1,17 @@
 from sqlalchemy import text
-from datetime import datetime, timedelta
-import pytz
-from sqlalchemy import Text
+from datetime import timedelta
 import logging
 
 # 로거 설정
 logger = logging.getLogger(__name__)
 
-# 중앙화된 DB 세션 관리 모듈 import
-from .db_session import SessionLocal, get_current_time, KST
+# db_session.py에서 설정한 DB 세션 및 유틸리티 함수들 가져오기
+from .db_session import (
+    SessionLocal,
+    get_current_time,
+    KST,
+    KSTDateTime
+)
 
 def has_recent_data(server, character=None, div=1):
     """
