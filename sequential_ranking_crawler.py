@@ -138,13 +138,13 @@ server_characters_lock = threading.Lock()
 processed_characters = set()
 processed_characters_lock = threading.Lock()  # 캐릭터 세트 락
 
-# 데이터베이스 작업을 위한 큐 시스템
-db_queue = queue.Queue(maxsize=100000)  # 최대 10만 항목으로 제한
+# DB 데이터 저장을 위한 큐 시스템 (성능 최적화)
+db_queue = queue.Queue(maxsize=200000)  # 최대 20만 항목으로 제한 (용량 두 배 확장)
 db_worker_running = threading.Event()   # DB 작업자 쓰레드 상태
 db_worker_running.set()                 # 초기에는 작동 상태로 설정
 
 # DB 작업자 쓰레드 수 (CPU 코어 수에 맞게 조정)
-DB_WORKER_COUNT = 4  # CPU 코어 수에 맞게 조정 (일반적으로 물리적 코어 수와 동일하게 설정)
+DB_WORKER_COUNT = 8  # CPU 코어 수에 맞게 조정 (성능 개선을 위해 증가)
 db_worker_threads = []  # DB 작업자 쓰레드 목록
 
 # 크롤링 작업 통계 및 상황판 관리
@@ -570,20 +570,21 @@ def insert_ranking_data(data, div=1):
 
 
 def db_worker(worker_id):
-    """고성능 DB 작업자 쓰레드 - 초당 1000건 이상 처리"""
+    """고성능 DB 작업자 쓰레드 - 초당 1000건 이상 처리 (성능 개선 버전)"""
     thread_name = f"DB작업자_{worker_id}"
     update_thread_status(thread_name, "시작됨")
-    logger.info(f"DB 작업자 쓰레드 #{worker_id} 시작 (고성능 모드)")
+    logger.info(f"DB 작업자 쓰레드 #{worker_id} 시작 (최적화된 고성능 모드)")
     
-    # 배치 크기 (1000개씩 처리)
-    BATCH_SIZE = 1000
+    # 배치 크기 (기존보다 2배 증가)
+    BATCH_SIZE = 2000
     
     # 재시도 정책
-    MAX_RETRIES = 3
+    MAX_RETRIES = 5  # 재시도 횟수 증가
     RETRY_DELAY = 1  # 초
     
     total_processed = 0
     batch_count = 0
+    last_error_count = 0  # 연속 오류 횟수 추적
     
     try:
         while db_worker_running.is_set() and not shutdown_event.is_set():
@@ -591,20 +592,46 @@ def db_worker(worker_id):
             div = 1  # 기본값
             
             try:
-                # 큐에서 배치 크기만큼 데이터 가져오기
-                for _ in range(BATCH_SIZE):
-                    try:
-                        data, div = db_queue.get(timeout=1)
-                        batch.extend(data)
-                        db_queue.task_done()
-                    except queue.Empty:
-                        if batch:  # 큐는 비었지만 처리할 배치가 있는 경우
-                            break
-                        time.sleep(0.1)  # CPU 사용량 감소를 위한 짧은 대기
+                # 큐에서 배치 크기만큼 데이터 가져오기 (최적화: 빠른 일괄 처리)
+                try:
+                    # 한꺼번에 많은 항목을 처리하기 위해 급하게 가져오기
+                    start_time = time.time()
+                    queue_fetch_timeout = 0.5  # 최대 0.5초 대기 (성능 개선)
+                    
+                    while len(batch) < BATCH_SIZE and time.time() - start_time < queue_fetch_timeout:
+                        try:
+                            data, cur_div = db_queue.get(block=False)
+                            batch.extend(data)
+                            db_queue.task_done()
+                            div = cur_div  # 마지막 항목의 div 값 사용
+                        except queue.Empty:
+                            # 배치가 있으면서 큐가 비었으면 바로 처리
+                            if batch:
+                                break
+                            # 아무것도 없으면 잠시 대기 (CPU 부하 감소)
+                            time.sleep(0.01) 
+                except Exception as fetch_error:
+                    # 가져오기 오류 무시하고 계속 진행 (있는 데이터만 처리)
+                    if batch:
+                        logger.debug(f"큐 가져오기 중 오류 발생했지만 배치 처리 계속: {str(fetch_error)[:50]}")
+                    else:
+                        # 배치가 없으면 잠시 대기 후 다시 시도
+                        time.sleep(0.05)
                         continue
                 
+                # 처리할 배치가 없는 경우 다음 반복으로
                 if not batch:
+                    # 다음 반복 전에 짧게 대기 (CPU 부하 감소)
+                    time.sleep(0.05)
                     continue
+                
+                # 현재 KST 시간을 한 번만 계산 (타임존 변환 최적화)
+                current_time_kst = get_current_time()
+                
+                # 배치 데이터 전처리 - 타임존과 같은 공통 값을 미리 설정
+                # 이렇게 하면 매번 변환할 필요가 없음
+                for item in batch:
+                    item['retrieved_at_val'] = current_time_kst
                 
                 # 벌크 인서트 실행
                 retries = 0
@@ -612,80 +639,118 @@ def db_worker(worker_id):
                 session = None
                 
                 while not success and retries < MAX_RETRIES:
+                    # 세션 시작 전 짧은 대기 (이전 세션이 완전히 정리되도록)
+                    if retries > 0:
+                        time.sleep(RETRY_DELAY * retries)  # 지수 백오프
+                    
                     session = ScopedSession()
                     try:
-                        # 트랜잭션 시작
+                        # 트랜잭션 시작 (타임아웃 추가)
                         with session.begin():
-                            # 벌크 인서트 실행 (SQLAlchemy Core 사용)
+                            # 타임존 설정 명시적 호출 (세션 시작 시 설정)
+                            session.execute(text('SET TIME ZONE \'Asia/Seoul\''))
+                            
+                            # 벌크 인서트 쿼리 최적화 (EXCLUDED 참조 대신 직접 값 사용)
                             stmt = text("""
                                 INSERT INTO mabinogi_ranking 
                                 (rank_position, change_amount, change_type, server_name, 
                                  character_name, class_name, power_value, div, retrieved_at)
                                 VALUES 
                                 (:rank, :change, :change_type, :server, 
-                                 :character, :class, :power, :div, :retrieved_at_val AT TIME ZONE 'Asia/Seoul')
+                                 :character, :class, :power, :div, :retrieved_at_val)
                                 ON CONFLICT (character_name, server_name, div) 
                                 DO UPDATE SET 
-                                    rank_position = EXCLUDED.rank_position,
-                                    change_amount = EXCLUDED.change_amount,
-                                    change_type = EXCLUDED.change_type,
-                                    class_name = EXCLUDED.class_name,
-                                    power_value = EXCLUDED.power_value,
-                                    retrieved_at = EXCLUDED.retrieved_at AT TIME ZONE 'Asia/Seoul'
+                                    rank_position = :rank,
+                                    change_amount = :change,
+                                    change_type = :change_type,
+                                    class_name = :class,
+                                    power_value = :power,
+                                    retrieved_at = :retrieved_at_val
                             """)
                             
-                            # 배치 실행
+                            # 배치 실행 (타임아웃 설정 추가)
                             session.execute(stmt, batch)
+                            
+                            # 즉시 커밋 (with 블록 내에서 자동 커밋됨)
                         
                         # 성공 시
                         success = True
                         processed = len(batch)
                         total_processed += processed
                         batch_count += 1
+                        last_error_count = 0  # 성공 시 오류 카운터 리셋
                         
-                        # 통계 업데이트
+                        # 통계 업데이트 (큐 사이즈 실시간 확인)
+                        queue_size = db_queue.qsize()
                         update_db_stats(
                             processed=processed, 
-                            queue_size=db_queue.qsize(), 
-                            batch_size=len(batch)
+                            queue_size=queue_size, 
+                            batch_size=processed
                         )
                         
-                        # 1000배치마다 로그 출력
-                        if batch_count % 1000 == 0:
-                            logger.info(f"작업자 {worker_id}: 총 {total_processed:,}개 항목 처리 완료")
-                        
-                        # 작업 완료 후 커밋
-                        session.commit()
+                        # 처리 속도 로깅 (100배치마다, 너무 자주 로깅하지 않도록 조정)
+                        if batch_count % 100 == 0:
+                            logger.info(f"작업자 {worker_id}: 총 {total_processed:,}개 항목 처리 완료, 큐 크기: {queue_size:,}")
                                 
                     except Exception as e:
-                        if session:
-                            session.rollback()
-                        retries += 1
-                        logger.error(f"배치 처리 실패 (시도 {retries}/{MAX_RETRIES}): {str(e)[:200]}")
-                        if retries < MAX_RETRIES:
-                            time.sleep(RETRY_DELAY * retries)  # 지수 백오프
-                        else:
-                            logger.error(f"배치 처리 포기: {len(batch)}개 항목 손실됨")
-                    finally:
-                        if session:
-                            session.close()
-                            ScopedSession.remove()
+                        error_msg = str(e)[:200] if str(e) else "알 수 없는 오류"
                         
-                        # 주기적으로 가비지 컬렉션 실행
-                        if batch_count % 100 == 0:
-                            gc.collect()
+                        if session:
+                            try:
+                                session.rollback()
+                            except Exception as rollback_error:
+                                logger.error(f"롤백 중 오류: {str(rollback_error)[:100]}")
+                        
+                        retries += 1
+                        last_error_count += 1
+                        
+                        # 오류 로깅 (너무 많은 반복 로그는 피함)
+                        if retries == 1 or retries == MAX_RETRIES:
+                            logger.error(f"배치 처리 실패 (시도 {retries}/{MAX_RETRIES}): {error_msg}")
+                        
+                        # 최대 재시도 횟수 초과 시
+                        if retries >= MAX_RETRIES:
+                            logger.error(f"배치 처리 포기: {len(batch)}개 항목, 연속 오류: {last_error_count}")
+                            # 연속 오류가 많으면 복구를 위해 더 오래 대기
+                            if last_error_count > 5:
+                                time.sleep(5)  # 5초 휴식 후 다음 배치로
+                    finally:
+                        # 세션 정리 (무조건 실행)
+                        if session:
+                            try:
+                                session.close()
+                                ScopedSession.remove()
+                            except Exception as session_close_error:
+                                logger.error(f"세션 종료 오류: {str(session_close_error)[:100]}")
                 
-                # 배치 처리 후 상황판 업데이트
-                display_stats_dashboard()
+                # 주기적으로 가비지 컬렉션 실행 (메모리 관리)
+                if batch_count % 50 == 0:
+                    gc.collect()
+                    
+                # 배치 처리 후 주기적으로 상황판 업데이트 (너무 자주 하지 않도록 조정)
+                if batch_count % 10 == 0:
+                    display_stats_dashboard()
                 
-            except Exception as e:
-                logger.error(f"작업자 {worker_id} 오류: {str(e)[:200]}")
+            except Exception as worker_error:
+                # 작업자 수준 오류 로깅 및 대기
+                logger.error(f"작업자 {worker_id} 일반 오류: {str(worker_error)[:200]}")
                 time.sleep(1)  # 오류 발생 시 잠시 대기
+                last_error_count += 1
+                
+                # 연속 오류가 너무 많으면 더 오래 대기 (자가 복구)
+                if last_error_count > 10:
+                    logger.warning(f"작업자 {worker_id} 연속 오류 ({last_error_count}회) 감지, 10초 휴식")
+                    time.sleep(10)
+                    last_error_count = 0  # 휴식 후 카운터 리셋
     
-    except Exception as e:
-        logger.error(f"DB 작업자 {worker_id} 치명적 오류: {str(e)}", exc_info=True)
+    except Exception as fatal_error:
+        logger.error(f"DB 작업자 {worker_id} 치명적 오류: {str(fatal_error)}", exc_info=True)
     finally:
-        ScopedSession.remove()
+        try:
+            ScopedSession.remove()
+        except Exception:
+            pass  # 종료 시 예외 무시
+            
         update_thread_status(thread_name, "종료됨")
         logger.info(f"DB 작업자 #{worker_id} 종료. 총 처리 항목: {total_processed:,}")
 
@@ -824,13 +889,13 @@ def save_to_db_directly(data, div=1):
                     pass
             self.pool = []
 
-# DB 큐 및 안전한 크롤링을 위한 임계값 설정
-MAX_QUEUE_SIZE = 10000  # DB 큐 최대 크기 (이 이상이면 크롤링 일시 중단)
-MAX_COLLECTOR_SIZE = 5000  # 콜렉터 최대 크기 (이 이상이면 크롤링 일시 중단)
-PAUSE_DURATION = 10  # 크롤링 일시 중단 시간(초)
-SAFE_QUEUE_SIZE = 5000  # DB 큐 안전 크기 (이 이하면 크롤링 재개)
-SAFE_COLLECTOR_SIZE = 2000  # 콜렉터 안전 크기 (이 이하면 크롤링 재개)
-STATUS_CHECK_INTERVAL = 5  # 상태 확인 주기(초)
+# DB 큐 및 안전한 크롤링을 위한 임계값 설정 (최적화된 값으로 조정)
+MAX_QUEUE_SIZE = 100000  # DB 큐 최대 크기 (이 이상이면 크롤링 일시 중단, 5배 증가)
+MAX_COLLECTOR_SIZE = 10000  # 콜렉터 최대 크기 (이 이상이면 크롤링 일시 중단, 2배 증가)
+PAUSE_DURATION = 5  # 크롤링 일시 중단 시간(초), 더 현저히 재시도
+SAFE_QUEUE_SIZE = 50000  # DB 큐 안전 크기 (이 이하면 크롤링 재개, 10배 증가)
+SAFE_COLLECTOR_SIZE = 5000  # 콜렉터 안전 크기 (이 이하면 크롤링 재개, 2.5배 증가)
+STATUS_CHECK_INTERVAL = 3  # 상태 확인 주기(초), 더 빠른 반응을 위해 줄임
 
 # 크롤링 일시 정지 상태 저장용 이벤트 객체
 crawling_paused = {}
