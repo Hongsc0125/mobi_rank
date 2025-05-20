@@ -631,7 +631,7 @@ def db_worker(worker_id):
                                     change_type = EXCLUDED.change_type,
                                     class_name = EXCLUDED.class_name,
                                     power_value = EXCLUDED.power_value,
-                                    retrieved_at = EXCLUDED.retrieved_at
+                                    retrieved_at = EXCLUDED.retrieved_at AT TIME ZONE 'Asia/Seoul'
                             """)
                             
                             # 배치 실행
