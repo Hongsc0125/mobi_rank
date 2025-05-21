@@ -34,7 +34,7 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
 
 # DB 연결 모듈 가져오기
-from service.db import insert_data, get_980_data, delete_character_data, get_duplicate_filtered_count
+from service.db import insert_data, get_980_data, delete_character_data, get_duplicate_filtered_count, increment_duplicate_filtered_count
 from service.db_session import (
     SessionLocal, 
     ScopedSession, 
@@ -657,25 +657,42 @@ def db_worker(worker_id):
                         
                         # 벌크 인서트 쿼리 최적화 (EXCLUDED 참조 대신 직접 값 사용)
                         stmt = text("""
-                            INSERT INTO mabinogi_ranking 
-                            (rank_position, change_amount, change_type, server_name, 
-                             character_name, class_name, power_value, div, retrieved_at)
-                            VALUES 
-                            (:rank, :change, :change_type, :server, 
-                             :character, :class, :power, :div, :retrieved_at_val)
-                            ON CONFLICT (character_name, server_name, div) 
-                            DO UPDATE SET 
-                                rank_position = :rank,
-                                change_amount = :change,
-                                change_type = :change_type,
-                                class_name = :class,
-                                power_value = :power,
-                                retrieved_at = :retrieved_at_val
+                            WITH inserted AS (
+                                INSERT INTO mabinogi_ranking 
+                                (rank_position, change_amount, change_type, server_name, 
+                                 character_name, class_name, power_value, div, retrieved_at)
+                                VALUES 
+                                (:rank, :change, :change_type, :server, 
+                                 :character, :class, :power, :div, :retrieved_at_val)
+                                ON CONFLICT (character_name, server_name, div) 
+                                DO UPDATE SET 
+                                    rank_position = :rank,
+                                    change_amount = :change,
+                                    change_type = :change_type,
+                                    class_name = :class,
+                                    power_value = :power,
+                                    retrieved_at = :retrieved_at_val
+                                RETURNING (xmax = 0) AS inserted_new_row
+                            )
+                            SELECT COUNT(*) AS skipped_rows
+                            FROM inserted
+                            WHERE NOT inserted_new_row
                         """)
                         
                         # 데이터 배치 삽입 실행 (트랜잭션 자동 관리)
-                        session.execute(stmt, batch)
+                        result = session.execute(stmt, batch)
                         session.commit()
+                        
+                        # 중복으로 인해 스킵된 (업데이트된) 행 수 확인
+                        skipped_rows = 0
+                        for row in result:
+                            skipped_rows = row[0]  # 첫 번째 열이 스킵된 행 수
+                            break
+                            
+                        # 중복 필터링 카운트 증가
+                        if skipped_rows > 0:
+                            from service.db import increment_duplicate_filtered_count
+                            increment_duplicate_filtered_count(skipped_rows)
                             
                             # 즉시 커밋 (with 블록 내에서 자동 커밋됨)
                         
