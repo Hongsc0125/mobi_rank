@@ -171,16 +171,16 @@ def update_server_stats(server_name, items_collected=0, items_flushed=0):
     with stats_lock:
         if server_name not in server_stats:
             server_stats[server_name] = {
-                'items_collected': 0,  # 수집된 항목 총계
-                'items_flushed': 0,   # 크롤러가 비운 항목 총계
-                'collector_size': 0,  # 수집기에 현재 들어있는 항목 수
+                'total_collected': 0,  # 수집된 항목 총계
+                'total_flushed': 0,   # 저장된 항목 총계
+                'collector_size': 0,  # 수집기에 현재 들어있는 항목 수 (현재 배치)
                 'rank_range': "미정보",  # 현재 크롤링 중인 랭킹 구간
                 'current_character': "",  # 현재 처리 중인 캐릭터
                 'last_update': datetime.now(KST),  # 마지막 갱신 시간
             }
             
-        server_stats[server_name]['items_collected'] += items_collected
-        server_stats[server_name]['items_flushed'] += items_flushed
+        server_stats[server_name]['total_collected'] += items_collected
+        server_stats[server_name]['total_flushed'] += items_flushed
         server_stats[server_name]['last_update'] = datetime.now(KST)
 
 # DB 통계 갱신 함수
@@ -231,10 +231,10 @@ def display_stats_dashboard():
         total_collector_size = 0
         
         for server, stats in sorted(server_stats.items()):
-            total_collected += stats['items_collected']
-            current_collector_size = stats['items_collected'] - stats['items_flushed']
+            total_collected += stats['total_collected']
+            current_collector_size = stats['collector_size']
             total_collector_size += current_collector_size
-            server_summary += f"{server}: 수집={stats['items_collected']}, 배치={current_collector_size} | "
+            server_summary += f"{server}: 수집={stats['total_collected']}, 배치={current_collector_size} | "
             
             # 랭킹 구간 정보 추가
             current_char = stats.get('current_character', '')
@@ -266,11 +266,25 @@ def display_stats_dashboard():
 
 # 서버별 콜렉터 사이즈 업데이트 함수
 def update_collector_size(server_name, size):
-    """현재 콜렉터에 저장된 항목 수 갱신"""
+    """현재 콜렉터에 저장된 항목 수 갱신
+    
+    Args:
+        server_name: 서버 이름
+        size: 현재 콜렉터에 있는 항목 수(배치 크기)
+    """
     global server_stats
     with stats_lock:
         if server_name in server_stats:
             server_stats[server_name]['collector_size'] = size
+            
+            # 현재 배치 크기는 수집된 항목 - 저장된 항목과 일치해야 함
+            # 일관성 검사
+            expected_size = server_stats[server_name]['total_collected'] - server_stats[server_name]['total_flushed']
+            if size != expected_size and abs(size - expected_size) > 10:  # 약간의 오차 허용
+                logger.debug(f"[통계 불일치] 서버 {server_name}: 설정된 콜렉터 크기={size}, 예상 크기={expected_size}")
+                # 오차가 크면 통계 재조정 (일관성 유지)
+                if expected_size >= 0:
+                    server_stats[server_name]['collector_size'] = expected_size
             
 # 서버별 현재 크롤링 중인 랭킹 구간 정보 갱신
 def update_server_rank_info(server_name, rank_range, current_character=""):
@@ -1383,9 +1397,12 @@ def sequential_rank_crawl_worker(server_num, div=1):
                         # 통계에 이미 처리된 캐릭터를 반영
                         with stats_lock:
                             if server_name in server_stats:
-                                # 이미 처리된 캐릭터는 수집은 했지만 저장도 된 상태로 간주
-                                server_stats[server_name]['items_collected'] += 1
-                                server_stats[server_name]['items_flushed'] += 1
+                                # 이미 처리된 캐릭터는 수집도 했고 저장도 완료된 상태
+                                server_stats[server_name]['total_collected'] += 1
+                                server_stats[server_name]['total_flushed'] += 1
+                                
+                                # 콜렉터 사이즈는 유지 - 이미 처리된 것은 현재 배치에 포함되지 않음
+                                update_collector_size(server_name, server_stats[server_name]['collector_size'])
                         
                         continue
                 
