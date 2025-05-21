@@ -645,10 +645,14 @@ def db_worker(worker_id):
                     
                     session = ScopedSession()
                     try:
-                        # 트랜잭션 시작 (타임아웃 추가)
+                        # 트랜잭션 시작 전 설정
+                        # 타임존 설정 명시적 호출 (세션 시작 시 설정)
+                        session.execute(text('SET TIME ZONE \'Asia/Seoul\''))
+                        # 데드락 회피를 위한 격리수준 초기화
+                        session.execute(text('SET TRANSACTION ISOLATION LEVEL READ COMMITTED'))
+                        
+                        # 트랜잭션 시작
                         with session.begin():
-                            # 타임존 설정 명시적 호출 (세션 시작 시 설정)
-                            session.execute(text('SET TIME ZONE \'Asia/Seoul\''))
                             
                             # 벌크 인서트 쿼리 최적화 (EXCLUDED 참조 대신 직접 값 사용)
                             stmt = text("""
@@ -1117,7 +1121,8 @@ def get_character_list_for_server(server_name, div=1):
             if not characters:
                 logger.warning(f"서버 {server_name}에서 크롤링할 캐릭터를 찾을 수 없음. 기본 캐릭터 사용.")
                 return ["힝트"]
-                
+              # 서버별 크롤링 상태 정보
+            logger.info(f"로딩된 서버 이름들: {[server for server in crawling_paused.keys()]}")
             logger.info(f"서버 {server_name}에서 {len(characters)}개의 캐릭터를 마지막 랭킹부터 크롤링할 예정")
             return characters
         finally:
