@@ -645,35 +645,30 @@ def db_worker(worker_id):
                     
                     session = ScopedSession()
                     try:
-                        # 트랜잭션 시작 전 설정
-                        # 타임존 설정 명시적 호출 (세션 시작 시 설정)
+                        # 타임존 설정 및 트랜잭션 관련 초기화
                         session.execute(text('SET TIME ZONE \'Asia/Seoul\''))
-                        # 데드락 회피를 위한 격리수준 초기화
-                        session.execute(text('SET TRANSACTION ISOLATION LEVEL READ COMMITTED'))
                         
-                        # 트랜잭션 시작
-                        with session.begin():
-                            
-                            # 벌크 인서트 쿼리 최적화 (EXCLUDED 참조 대신 직접 값 사용)
-                            stmt = text("""
-                                INSERT INTO mabinogi_ranking 
-                                (rank_position, change_amount, change_type, server_name, 
-                                 character_name, class_name, power_value, div, retrieved_at)
-                                VALUES 
-                                (:rank, :change, :change_type, :server, 
-                                 :character, :class, :power, :div, :retrieved_at_val)
-                                ON CONFLICT (character_name, server_name, div) 
-                                DO UPDATE SET 
-                                    rank_position = :rank,
-                                    change_amount = :change,
-                                    change_type = :change_type,
-                                    class_name = :class,
-                                    power_value = :power,
-                                    retrieved_at = :retrieved_at_val
-                            """)
-                            
-                            # 배치 실행 (타임아웃 설정 추가)
-                            session.execute(stmt, batch)
+                        # 벌크 인서트 쿼리 최적화 (EXCLUDED 참조 대신 직접 값 사용)
+                        stmt = text("""
+                            INSERT INTO mabinogi_ranking 
+                            (rank_position, change_amount, change_type, server_name, 
+                             character_name, class_name, power_value, div, retrieved_at)
+                            VALUES 
+                            (:rank, :change, :change_type, :server, 
+                             :character, :class, :power, :div, :retrieved_at_val)
+                            ON CONFLICT (character_name, server_name, div) 
+                            DO UPDATE SET 
+                                rank_position = :rank,
+                                change_amount = :change,
+                                change_type = :change_type,
+                                class_name = :class,
+                                power_value = :power,
+                                retrieved_at = :retrieved_at_val
+                        """)
+                        
+                        # 데이터 배치 삽입 실행 (트랜잭션 자동 관리)
+                        session.execute(stmt, batch)
+                        session.commit()
                             
                             # 즉시 커밋 (with 블록 내에서 자동 커밋됨)
                         
