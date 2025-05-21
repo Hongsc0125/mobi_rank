@@ -1377,8 +1377,16 @@ def sequential_rank_crawl_worker(server_num, div=1):
                 character_key = f"{server_name}_{current_char}_{div}"
                 with processed_characters_lock:
                     if character_key in processed_characters:
-                        # 이미 처리된 캐릭터는 스킵
+                        # 이미 처리된 캐릭터는 스킵하고 통계에 반영
                         logger.debug(f"서버 {server_name}, 캐릭터 '{current_char}' 이미 처리됨, 크롤링 스킵")
+                        
+                        # 통계에 이미 처리된 캐릭터를 반영
+                        with stats_lock:
+                            if server_name in server_stats:
+                                # 이미 처리된 캐릭터는 수집은 했지만 저장도 된 상태로 간주
+                                server_stats[server_name]['items_collected'] += 1
+                                server_stats[server_name]['items_flushed'] += 1
+                        
                         continue
                 
                 update_thread_status(thread_name, f"캐릭터 크롤링 중", f"서버 {server_name}, 캐릭터 {current_char} ({current_char_idx+1}/{total_chars})")
