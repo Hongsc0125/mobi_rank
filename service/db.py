@@ -1,9 +1,34 @@
 from sqlalchemy import text
 from datetime import timedelta
 import logging
+import threading
 
 # 로거 설정
 logger = logging.getLogger(__name__)
+
+# 중복 필터링된 항목 수를 추적하기 위한 전역 변수
+duplicate_filtered_count = 0
+duplicate_filtered_lock = threading.Lock()
+
+def get_duplicate_filtered_count():
+    """중복 필터링된 항목 수를 반환합니다."""
+    global duplicate_filtered_count
+    with duplicate_filtered_lock:
+        return duplicate_filtered_count
+
+def reset_duplicate_filtered_count():
+    """중복 필터링된 항목 수를 리셋합니다."""
+    global duplicate_filtered_count
+    with duplicate_filtered_lock:
+        duplicate_filtered_count = 0
+        return duplicate_filtered_count
+
+def increment_duplicate_filtered_count(count=1):
+    """중복 필터링된 항목 수를 증가시킵니다."""
+    global duplicate_filtered_count
+    with duplicate_filtered_lock:
+        duplicate_filtered_count += count
+        return duplicate_filtered_count
 
 # db_session.py에서 설정한 DB 세션 및 유틸리티 함수들 가져오기
 from .db_session import (
@@ -80,6 +105,11 @@ def insert_data(data, server=None, character=None, div=1, retrieved_at_kst=None)
     # logger.info(f"retrieved_at_kst: {retrieved_at_kst}")
     recent_data = has_recent_data(server, character, div)
     if recent_data:
+        # 중복 필터링된 항목 수 증가
+        if isinstance(data, list):
+            increment_duplicate_filtered_count(len(data))
+        else:
+            increment_duplicate_filtered_count(1)
         #logger.info("Recent data found, skipping database update")
         return {"success": True, "rows_affected": 0, "data": recent_data, "from_cache": True}
     

@@ -34,7 +34,7 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
 
 # DB 연결 모듈 가져오기
-from service.db import insert_data, get_980_data, delete_character_data
+from service.db import insert_data, get_980_data, delete_character_data, get_duplicate_filtered_count
 from service.db_session import (
     SessionLocal, 
     ScopedSession, 
@@ -250,8 +250,14 @@ def display_stats_dashboard():
         if not rank_info_summary:
             rank_info_summary = "랭킹 정보 없음"
         
+        # 중복 필터링 항목 수 가져오기
+        filtered_count = get_duplicate_filtered_count()
+        
         # DB 저장 현황
         db_summary = f"DB저장: 총 {db_stats['total_processed']}개 처리, 큐사이즈: {db_stats['current_queue_size']}, 속도: {db_stats['processing_rate']:.1f}개/초"
+        
+        # 중복 필터링 현황
+        filter_info = f"중복 필터링: {filtered_count:,}개"
         
         # 종합 요약
         logger.info(f"===== 크롤링 상황판 ({time_str}, 총실행시간: {elapsed_str}) =====")
@@ -259,7 +265,8 @@ def display_stats_dashboard():
         logger.info(f"[2] {server_summary}")
         logger.info(f"[3] 서버별 랭킹 정보: {rank_info_summary}")
         logger.info(f"[4] {db_summary}")
-        logger.info("=================================================")
+        logger.info(f"[5] {filter_info}")
+        logger.info("=============================================")
         
         # 상황판 표시 시간 갱신
         last_stats_display = current_time
@@ -986,12 +993,16 @@ def display_stats_dashboard():
             stats.get("rank_range", "미정보")
         )
     
+    # 중복 필터링 항목 수 가져오기
+    filtered_count = get_duplicate_filtered_count()
+    
     # DB 통계
     dashboard += "\n[DB 통계]\n"
     dashboard += f"\ud504로세스된 항목: {db_stats['processed']:,d}\n"
     dashboard += f"큐 사이즈: {db_stats['queue_size']:,d}\n"
     dashboard += f"최근 배치 크기: {db_stats['batch_size']:,d}\n"
     dashboard += f"평균 처리 속도: {db_stats['rate']:.2f} 항목/초\n"
+    dashboard += f"중복 필터링된 항목: {filtered_count:,d}\n"
     
     dashboard += f"{'-'*80}\n"
     
