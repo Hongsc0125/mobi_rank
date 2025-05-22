@@ -668,10 +668,10 @@ def db_worker(worker_id):
                     
                     session = ScopedSession()
                     try:
-                        # 타임존 설정 및 트랜잭션 관련 초기화
+                        # 타임존 설정 (KST 타임존 유지)
                         session.execute(text('SET TIME ZONE \'Asia/Seoul\''))
                         
-                        # 벌크 인서트 쿼리 최적화 - 데드락 방지를 위한 락 획득 전략 변경
+                        # 벌크 인서트 쿼리 - 데드락 방지를 위한 최적화
                         stmt = text("""
                             INSERT INTO mabinogi_ranking 
                             (rank_position, change_amount, change_type, server_name, 
@@ -690,13 +690,14 @@ def db_worker(worker_id):
                         """)
                         
                         # 데이터 배치 삽입 실행 - 안정적인 트랜잭션 관리
+                        # 단순하게 실행하고 명시적으로 커밋
                         try:
-                            with session.begin():
-                                session.execute(stmt, batch)
-                            # with 블록을 사용하면 자동으로 커밋되므로 별도 커밋 불필요
+                            session.execute(stmt, batch)  # 실행
+                            session.commit()  # 명시적 커밋
                         except Exception as inner_ex:
-                            # 내부 예외 발생 시 다시 던짐 (상위 예외 처리로 전달)
-                            raise inner_ex
+                            # 내부 예외 발생 시 기존 처리방식으로 처리
+                            session.rollback()  # 오류 발생 시 롤백
+                            raise inner_ex  # 예외 다시 던지기
                             
                             # 즉시 커밋 (with 블록 내에서 자동 커밋됨)
                         
@@ -820,70 +821,69 @@ def save_to_db_directly(data, div=1):
                     # 트랜잭션 시작 전에 KST 타임존 설정
                     session.execute(text('SET TIME ZONE \'Asia/Seoul\''))
                     
-                    with session.begin():
-                        # 벌크 인서트 쿼리 - db_worker 함수와 일관된 방식으로 수정
-                        stmt = text("""
-                            INSERT INTO mabinogi_ranking 
-                            (rank_position, change_amount, change_type, server_name, 
-                             character_name, class_name, power_value, div, retrieved_at)
-                            VALUES 
-                            (:rank, :change, :change_type, :server, 
-                             :character, :class, :power, :div, :retrieved_at_val)
-                            ON CONFLICT (character_name, server_name, div) 
-                            DO UPDATE SET 
-                                rank_position = EXCLUDED.rank_position,
-                                change_amount = EXCLUDED.change_amount,
-                                change_type = EXCLUDED.change_type,
-                                class_name = EXCLUDED.class_name,
-                                power_value = EXCLUDED.power_value,
-                                retrieved_at = EXCLUDED.retrieved_at
-                        """)
+                    # 벌크 인서트 쿼리 - db_worker 함수와 일관된 방식으로 수정
+                    stmt = text("""
+                        INSERT INTO mabinogi_ranking 
+                        (rank_position, change_amount, change_type, server_name, 
+                         character_name, class_name, power_value, div, retrieved_at)
+                        VALUES 
+                        (:rank, :change, :change_type, :server, 
+                         :character, :class, :power, :div, :retrieved_at_val)
+                        ON CONFLICT (character_name, server_name, div) 
+                        DO UPDATE SET 
+                            rank_position = EXCLUDED.rank_position,
+                            change_amount = EXCLUDED.change_amount,
+                            change_type = EXCLUDED.change_type,
+                            class_name = EXCLUDED.class_name,
+                            power_value = EXCLUDED.power_value,
+                            retrieved_at = EXCLUDED.retrieved_at
+                    """)
+                    
+                    # 배치 파라미터 준비
+                    params_list = []
+                    for item in batch:
+                        # 콤마가 포함된 문자열을 숫자로 변환
+                        rank_position = int(item['rank'].replace(',', '').replace('위', ''))
+                        power_value = int(item['power'].replace(',', ''))
                         
-                        # 배치 파라미터 준비
-                        params_list = []
-                        for item in batch:
-                            # 콤마가 포함된 문자열을 숫자로 변환
-                            rank_position = int(item['rank'].replace(',', '').replace('위', ''))
-                            power_value = int(item['power'].replace(',', ''))
+                        # change 값 처리
+                        change_value = item['change']
+                        if change_value == '-':
+                            change_value = '0'
                             
-                            # change 값 처리
-                            change_value = item['change']
-                            if change_value == '-':
-                                change_value = '0'
-                                
-                            # change_type이 'down'인 경우 음수로 변환 (랭킹이 내려간 경우)
-                            change_value_int = int(change_value.replace(',', ''))
-                            if item['change_type'] == 'down':
-                                change_value_int = -change_value_int
-                            
-                            params_list.append({
-                                'rank': rank_position,
-                                'change': change_value_int,
-                                'change_type': item['change_type'],
-                                'server': item['server'],
-                                'character': item['character'],
-                                'class': item['class'],
-                                'power': power_value,
-                                'div': div,
-                                'retrieved_at_val': get_current_time()  # KST 시간 사용
-                            })
+                        # change_type이 'down'인 경우 음수로 변환 (랭킹이 내려간 경우)
+                        change_value_int = int(change_value.replace(',', ''))
+                        if item['change_type'] == 'down':
+                            change_value_int = -change_value_int
                         
-                        # 배치 실행 - 안정적인 트랜잭션 관리
-                        try:
-                            session.execute(stmt, params_list)
-                            # with 블록 내에서 자동으로 커밋됨
-                        except Exception as inner_ex:
-                            # 내부 예외 발생 시 다시 던짐
-                            raise inner_ex
-                        
-                        # 성공 시
-                        success = True
-                        logger.debug(f"직접 저장 완료: {len(batch)}개 항목 (배치 {i//BATCH_SIZE + 1}/{(len(data)-1)//BATCH_SIZE + 1})")
+                        params_list.append({
+                            'rank': rank_position,
+                            'change': change_value_int,
+                            'change_type': item['change_type'],
+                            'server': item['server'],
+                            'character': item['character'],
+                            'class': item['class'],
+                            'power': power_value,
+                            'div': div,
+                            'retrieved_at_val': get_current_time()  # KST 시간 사용
+                        })
+                    
+                    # 배치 실행 - 단순하게 실행하고 명시적으로 커밋
+                    session.execute(stmt, params_list)
+                    session.commit()  # 명시적 커밋
+                    
+                    # 성공 시
+                    success = True
+                    logger.debug(f"직접 저장 완료: {len(batch)}개 항목 (배치 {i//BATCH_SIZE + 1}/{(len(data)-1)//BATCH_SIZE + 1})")
                     
                 except Exception as e:
                     retries += 1
                     if session:
-                        session.rollback()
+                        try:
+                            session.rollback()
+                        except Exception as rb_error:
+                            logger.error(f"롤백 오류 무시: {str(rb_error)[:100]}")
+                            # 롤백 오류는 무시하고 계속 진행
                     
                     if retries >= max_retries:
                         logger.error(f"직접 저장 실패 (배치 {i//BATCH_SIZE + 1}): {str(e)[:200]}")
