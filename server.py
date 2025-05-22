@@ -13,6 +13,7 @@ from service.db_session import engine
 import os
 from datetime import datetime
 from service.population_statistics import update_population_statistics, generate_class_pie_chart, get_latest_class_chart
+from service.html_image_converter import html_to_image, puppeteer_backup_method
 from fastapi.responses import FileResponse, JSONResponse
 
 # Configure logging
@@ -80,6 +81,9 @@ app.mount("/images", StaticFiles(directory=static_dir), name="images")
 class SearchReq(BaseModel):
     server: str
     character: str
+    
+class HtmlImageReq(BaseModel):
+    html: str
 
 @app.post("/search", summary="캐릭터 랭킹 조회")
 def api_search(req: SearchReq):
@@ -226,9 +230,31 @@ def get_class_chart():
         raise HTTPException(status_code=500, detail=f"서버 오류: {str(e)}")
 
 
+# HTML을 이미지로 변환하는 엔드포인트
+@app.post("/html_to_image", summary="HTML 테이블을 이미지로 변환")
+def convert_html_to_image(req: HtmlImageReq):
+    try:
+        # HTML 검증 및 전처리 (빈 셀 처리)
+        processed_html = req.html.replace("<td></td>", "<td>&nbsp;</td>")
+        
+        # HTML을 이미지로 변환
+        result = html_to_image(processed_html)
+        
+        if result["success"]:
+            return {
+                "success": True,
+                "imageUrl": result["imageUrl"],
+                "message": "HTML 테이블 이미지 변환 성공"
+            }
+        else:
+            raise HTTPException(status_code=500, detail="HTML 테이블 이미지 변환 실패")
+    
+    except Exception as e:
+        logger.error(f"HTML 테이블 이미지 변환 중 오류 발생: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"HTML 테이블 이미지 변환 오류: {str(e)}")
+
 # Start background tasks when the server starts
 @app.on_event("startup")
-def startup_event():
-    logger.info("Starting FastAPI server")
+async def startup_event():
     start_background_tasks()
     logger.info("Background tasks started")
