@@ -57,8 +57,18 @@ def html_to_image(html_content):
         # 렌더링될 시간 기다리기
         time.sleep(2)
         
-        # 이미지 캡처
-        driver.save_screenshot(output_image_path)
+        # 테이블 요소 찾기
+        try:
+            # 테이블 요소 찾기 시도
+            table_element = driver.find_element('css selector', 'table')
+            
+            # 테이블이 있는 경우 해당 요소만 캡처
+            logger.info(f"테이블 요소 찾음: 요소만 캡처합니다.")
+            table_element.screenshot(output_image_path)
+        except Exception as table_error:
+            # 테이블을 찾지 못하면 전체 페이지 캡처
+            logger.warning(f"테이블 요소를 찾지 못함: {table_error}, 전체 페이지를 캡처합니다.")
+            driver.save_screenshot(output_image_path)
         
         # 브라우저 종료
         driver.quit()
