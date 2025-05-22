@@ -35,8 +35,19 @@ def html_to_image(html_content):
         with open(temp_html_path, 'w', encoding='utf-8') as f:
             f.write(html_content)
         
+        # ChromeDriver 설치 경로 지정 (HOME 디렉토리에 설치)
+        home_dir = os.path.expanduser("~")
+        driver_dir = os.path.join(home_dir, ".chromedriver")
+        os.makedirs(driver_dir, exist_ok=True)
+        
         # ChromeDriver 설치 확인 및 경로 가져오기
-        chromedriver_path = chromedriver_autoinstaller.install()
+        try:
+            chromedriver_path = chromedriver_autoinstaller.install(path=driver_dir)
+            logger.info(f"ChromeDriver 설치 성공: {chromedriver_path}")
+        except Exception as driver_error:
+            logger.error(f"ChromeDriver 설치 오류: {driver_error}")
+            # 설치 실패 시 시스템 default 경로 사용 시도
+            chromedriver_path = "chromedriver"
         
         # Chrome 옵션 설정
         chrome_options = Options()
