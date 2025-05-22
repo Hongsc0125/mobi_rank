@@ -13,18 +13,21 @@ import re
 import signal
 import sys
 import gc
-from concurrent.futures import ThreadPoolExecutor
-import random
+import io
 import queue
-from queue import Queue
-from threading import Lock, Thread
+from queue import Empty
+from threading import Lock
 from typing import Dict, List, Optional, Tuple, Union
+
+# PostgreSQL 직접 접근용 라이브러리 (COPY 명령어 사용 시 필요)
+import psycopg2
+from psycopg2.extensions import connection as pg_connection
 
 # 서드파티 라이브러리
 import psutil
 import requests
 from bs4 import BeautifulSoup
-from fake_useragent import UserAgent
+from fake_useragent import UserAgent  # UserAgent는 이후 랜덤화에 사용할 예정
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
@@ -40,8 +43,7 @@ from service.db_session import (
     ScopedSession, 
     get_current_time, 
     KST, 
-    SQLALCHEMY_DATABASE_URL,
-    engine
+    SQLALCHEMY_DATABASE_URL
 )
 from sqlalchemy import text
 
@@ -68,8 +70,13 @@ logger.addHandler(file_handler)
 # 로그 시작 메시지
 logger.info("로거가 초기화되었습니다.")
 
-# 기본 로그 레벨을 WARNING으로 설정 (중요한 로그만 표시)
-logging.getLogger().setLevel(logging.WARNING)
+# 로그 레벨 정리: root 로거 대신 순차크롤러 네임스페이스만 조정
+# 다른 라이브러리(Selenium 등)의 로그는 그대로 유지
+
+# Selenium 로그 레벨은 WARNING으로 설정 (너무 많은 로그 방지)
+logging.getLogger('selenium').setLevel(logging.WARNING)
+logging.getLogger('urllib3').setLevel(logging.WARNING)
+
 # 순차크롤러 로그는 INFO 레벨 유지
 logger.setLevel(logging.INFO)
 
@@ -96,6 +103,14 @@ def check_system_resources():
     """
     global resource_usage_stats
     
+    # 호출 주기 판정 - 마지막 체크 이후 일정 시간이 지나야 다시 체크
+    current_time = datetime.now(KST)  # KST 시간 사용 (중요)
+    time_diff = (current_time - resource_usage_stats["last_check_time"]).total_seconds()
+    
+    # 일정 시간이 지나지 않았고 현재 스로틀링 상태가 아니라면 마지막 결과 그대로 반환
+    if time_diff < RESOURCE_CHECK_INTERVAL and not resource_usage_stats["throttling"]:
+        return True  # 안전한 상태로 간주
+    
     # 현재 CPU 사용량 (모든 코어의 평균)
     cpu_percent = psutil.cpu_percent(interval=0.1)
     
@@ -106,15 +121,17 @@ def check_system_resources():
     # 리소스 사용량 업데이트
     resource_usage_stats["cpu_percent"] = cpu_percent
     resource_usage_stats["memory_percent"] = memory_percent
-    resource_usage_stats["last_check_time"] = datetime.now(KST)
+    resource_usage_stats["last_check_time"] = current_time  # 현재 시간(이미 가져온 KST)으로 업데이트
     
     # CPU 또는 메모리 사용량이 임계치를 초과하는지 확인
     if cpu_percent > MAX_CPU_PERCENT or memory_percent > MAX_MEMORY_PERCENT:
+        # 스로틀링 상태로 전환 (이전에 아니었을 경우에만 로깅)
         if not resource_usage_stats["throttling"]:
             resource_usage_stats["throttling"] = True
             logger.warning(f"시스템 리소스 과부하 감지: CPU {cpu_percent:.1f}%, 메모리 {memory_percent:.1f}%, 크롤링 속도 제한 시작")
         return False
     else:
+        # 스로틀링 해제 (이전에 스로틀링 중이었을 경우에만 로깅)
         if resource_usage_stats["throttling"]:
             resource_usage_stats["throttling"] = False
             logger.info(f"시스템 리소스 상태 정상화: CPU {cpu_percent:.1f}%, 메모리 {memory_percent:.1f}%, 크롤링 속도 제한 해제")
@@ -125,6 +142,13 @@ shutdown_event = threading.Event()  # 종료 이벤트
 active_threads = []  # 활성 쓰레드 관리
 thread_status = {}   # 쓰레드 상태 관리
 thread_status_lock = threading.Lock()  # 쓰레드 상태 락
+
+# DB 워커 준비 완료 이벤트 (실행 순서 보장을 위한 시그널)
+db_workers_ready = threading.Event()  # 초기에는 시그널이 없음(False)
+
+# 카운트다운 래치 스타일의 워커 준비 카운터
+worker_ready_count = 0
+worker_ready_lock = threading.Lock()  # 카운터 락
 
 # 마지막으로 크롤링한 캐릭터 인덱스를 서버별로 저장
 last_crawled_character_index = {}
@@ -151,7 +175,63 @@ db_worker_threads = []  # DB 작업자 쓰레드 목록
 # 크롤링 작업 통계 및 상황판 관리
 stats_lock = threading.Lock()          # 통계 데이터 락
 server_stats = {}                      # 서버별 통계 정보
-server_rank_info = {}                  # 서버별 현재 처리 중인 랭킹 구간 정보
+
+# DB 연결 및 세션 생성을 위한 유틸리티 함수
+def create_db_connection(application_name="MobiRank_Crawler") -> pg_connection:
+    """화상력 있는 PostgreSQL 연결을 생성하고, KST 타임존 설정을 적용합니다.
+    
+    Args:
+        application_name: 연결의 애플리케이션 이름 (로그 추적용)
+        
+    Returns:
+        psycopg2 연결 객체
+    """
+    try:
+        # 새 연결 생성
+        conn = psycopg2.connect(
+            SQLALCHEMY_DATABASE_URL,
+            application_name=application_name
+        )
+        
+        # KST 타임존 설정 - 모든 데이터 저장/업데이트에 일관되게 적용
+        cur = conn.cursor()
+        cur.execute("SET TIME ZONE 'Asia/Seoul'")
+        conn.commit()  # 타임존 설정 커밋
+        cur.close()
+        
+        logger.debug(f"DB 연결 생성 성공 (application_name: {application_name})")
+        return conn
+    except Exception as e:
+        logger.error(f"DB 연결 생성 실패: {str(e)[:200]}")
+        raise
+
+def create_sqlalchemy_session(recreate=False):
+    """일관된 KST 타임존이 적용된 SQLAlchemy 세션을 생성합니다.
+    
+    Args:
+        recreate: 기존 세션을 제거하고 새로 생성할지 여부
+        
+    Returns:
+        SQLAlchemy 세션 객체
+    """
+    try:
+        if recreate:
+            try:
+                ScopedSession.remove()  # 기존 세션 제거
+            except Exception as remove_error:
+                logger.warning(f"기존 세션 제거 중 오류 (무시하고 계속): {str(remove_error)[:100]}")
+        
+        # 새 세션 생성
+        session = ScopedSession()
+        
+        # KST 타임존 설정 - 모든 데이터 저장 및 업데이트에 일관되게 적용
+        session.execute(text('SET TIME ZONE \'Asia/Seoul\''))
+        
+        logger.debug(f"SQLAlchemy 세션 생성 성공 (recreate: {recreate})")
+        return session
+    except Exception as e:
+        logger.error(f"SQLAlchemy 세션 생성 실패: {str(e)[:200]}")
+        raise
 
 # DB 저장 통계 정보
 db_stats = {
@@ -405,6 +485,9 @@ def fetch_rank_page(driver, server_num, search_name="", div=1, high_performance_
     list_url = "https://mabinogimobile.nexon.com/Ranking/List?t=1"
     api_url  = "https://mabinogimobile.nexon.com/Ranking/List/rankdata"
     
+    # 서버 번호를 서버 이름으로 변환 (오류 수정: 참조 전에 서버 이름 정의)
+    server_name = get_server_name(server_num)
+    
     attempts = 0
     last_exception = None
     driver_recreated = False
@@ -443,8 +526,17 @@ def fetch_rank_page(driver, server_num, search_name="", div=1, high_performance_
             for ck in driver.get_cookies():
                 sess.cookies.set(ck['name'], ck['value'])
                 
+            # 런타임 IP 차단 방지를 위한 UserAgent 랜덤화 (fake_useragent 사용)
+            try:
+                random_ua = UserAgent().random
+                logger.debug(f"랜덤 UserAgent 사용: {random_ua[:30]}...")
+            except Exception as ua_error:
+                # UserAgent 생성 실패 시 드라이버 UA 사용
+                random_ua = driver.execute_script("return navigator.userAgent;")
+                logger.warning(f"UserAgent 랜덤화 실패, 기본 UA 사용: {ua_error}")
+                
             headers = {
-                "User-Agent":          driver.execute_script("return navigator.userAgent;"),
+                "User-Agent":          random_ua,  # 랜덤 UserAgent 사용
                 "Accept":              "*/*",
                 "Referer":             list_url,
                 "X-Requested-With":    "XMLHttpRequest",
@@ -592,86 +684,198 @@ def insert_ranking_data(data, div=1):
 
 
 def db_worker(worker_id):
-    """고성능 DB 작업자 쓰레드 - 초당 1000건 이상 처리 (성능 개선 버전)"""
+    """고성능 DB 작업자 쓰레드 - 초당 수천건 처리 가능한 최적화 버전"""
     thread_name = f"DB작업자_{worker_id}"
     update_thread_status(thread_name, "시작됨")
-    logger.info(f"DB 작업자 쓰레드 #{worker_id} 시작 (최적화된 고성능 모드)")
+    logger.info(f"DB 작업자 쓰레드 #{worker_id} 시작 (초고성능 모드)")
     
-    # 배치 크기 (데드락 방지 및 성능 최적화)
-    BATCH_SIZE = 1500  # 너무 큰 배치는 락 경쟁 증가, 너무 작은 배치는 성능 저하
+    # 최초 시작 후 준비 상태 보고 (최소한의 시간 후 포스팅)
+    worker_init_delay = 1.0 + (worker_id * 0.2)  # 워커마다 사이즐 분배
+    time.sleep(worker_init_delay)  # 초기화에 약간의 시간 허용
     
-    # 재시도 정책 (데드락 등 문제 대응)
-    MAX_RETRIES = 7  # 데드락 발생 시 충분한 재시도 보장
-    RETRY_DELAY = 1  # 초 (기본 대기 시간)
-    RETRY_DELAY_MAX = 10  # 최대 대기 시간(초)
+    # 워커 준비 완료 시그널 증가 (카운트다운 래치 방식)
+    global worker_ready_count
+    with worker_ready_lock:
+        worker_ready_count += 1
+        ready_ratio = worker_ready_count / DB_WORKER_COUNT
+        logger.info(f"DB 작업자 #{worker_id} 준비 완료 - 큐 처리 준비됨 ({worker_ready_count}/{DB_WORKER_COUNT}, {ready_ratio:.0%})")
+        
+        # 모든 워커가 준비되면 시그널 설정
+        if worker_ready_count >= DB_WORKER_COUNT:
+            db_workers_ready.set()
+            logger.info(f"모든 DB 워커({DB_WORKER_COUNT}개) 준비 완료 - 크롤링 시작 가능")
     
+    # 배치 수집 설정 - 성능 최적화
+    MIN_BATCH_SIZE = 1000   # 최소 배치 크기 (성능 안정화)
+    MAX_BATCH_SIZE = 5000   # 최대 배치 크기 (메모리 고려)
+    MAX_WAIT = 2.0          # 최대 대기 시간(초) - 타임아웃 연장
+    
+    # 재시도 정책
+    MAX_RETRIES = 5
+    RETRY_DELAY_MAX = 10
+    
+    # 통계 추적
     total_processed = 0
     batch_count = 0
-    last_error_count = 0  # 연속 오류 횟수 추적
+    last_error_count = 0
+    stats_update_interval = 100  # 100배치마다 통계 업데이트
+    
+    # 워커별 서버 분리 (데드락 방지)
+    server_shard = worker_id % 7  # 7개 서버 분산 처리
+    
+    # 세션 재사용 - 한 번만 생성 (오버헤드 감소)
+    session = create_sqlalchemy_session()
     
     try:
+        
+        # 고성능 배치 처리 루프
         while db_worker_running.is_set() and not shutdown_event.is_set():
-            batch = []
-            div = 1  # 기본값
-            
             try:
-                # 큐에서 배치 크기만큼 데이터 가져오기 (최적화: 빠른 일괄 처리)
-                try:
-                    # 한꺼번에 많은 항목을 처리하기 위해 급하게 가져오기
-                    start_time = time.time()
-                    queue_fetch_timeout = 0.5  # 최대 0.5초 대기 (성능 개선)
-                    
-                    while len(batch) < BATCH_SIZE and time.time() - start_time < queue_fetch_timeout:
+                # 1. 배치 수집 최적화 - 최소 크기까지 블록 대기
+                batch = []
+                div = 1
+                start_time = time.time()
+                
+                # 최소 MIN_BATCH_SIZE개가 모일 때까지 블록 대기
+                # 또는 MAX_WAIT 시간 초과까지 대기
+                while len(batch) < MAX_BATCH_SIZE and time.time() - start_time < MAX_WAIT:
+                    try:
+                        # 큐에서 데이터를 블로킹 모드로 가져옴 (CPU 부하 감소)
+                        # 남은 최대 대기 시간 계산
+                        remaining_wait = MAX_WAIT - (time.time() - start_time)
+                        if remaining_wait <= 0 and len(batch) >= MIN_BATCH_SIZE:
+                            # 최소 배치 크기 확보 & 시간 초과
+                            break
+                            
                         try:
-                            data, cur_div = db_queue.get(block=False)
-                            batch.extend(data)
+                            # 블로킹 모드로 가져오되 timeout 설정
+                            timeout = max(0.1, min(remaining_wait, 0.5))  # 최소 0.1초, 최대 0.5초
+                            data, cur_div = db_queue.get(block=True, timeout=timeout)
+                            
+                            # 워커별 서버 분리 처리 (옵션) - 데드락 방지
+                            # batch.extend([item for item in data if hash(item['server']) % 7 == server_shard])
+                            batch.extend(data)  # 일단 모든 데이터 처리
+                            
                             db_queue.task_done()
-                            div = cur_div  # 마지막 항목의 div 값 사용
-                        except queue.Empty:
-                            # 배치가 있으면서 큐가 비었으면 바로 처리
-                            if batch:
+                            div = cur_div
+                            
+                            # 충분한 배치 크기 모였으면 중단
+                            if len(batch) >= MIN_BATCH_SIZE and time.time() - start_time > 0.5:
+                                # 최소한 0.5초는 기다려서 더 모을 기회 제공
                                 break
-                            # 아무것도 없으면 잠시 대기 (CPU 부하 감소)
-                            time.sleep(0.01) 
-                except Exception as fetch_error:
-                    # 가져오기 오류 무시하고 계속 진행 (있는 데이터만 처리)
-                    if batch:
-                        logger.debug(f"큐 가져오기 중 오류 발생했지만 배치 처리 계속: {str(fetch_error)[:50]}")
-                    else:
-                        # 배치가 없으면 잠시 대기 후 다시 시도
-                        time.sleep(0.05)
+                        except Empty:
+                            # 최소 배치 크기 확보했으면 바로 처리
+                            if len(batch) >= MIN_BATCH_SIZE:
+                                break
+                            # 시간 초과 임박하면 체크 더 자주
+                            continue
+                    except Exception as fetch_error:
+                        if batch:  # 배치가 있으면 계속 진행
+                            break
+                        time.sleep(0.1)
                         continue
                 
-                # 처리할 배치가 없는 경우 다음 반복으로
+                # 수집된 배치가 없으면 다음 반복으로
                 if not batch:
-                    # 다음 반복 전에 짧게 대기 (CPU 부하 감소)
-                    time.sleep(0.05)
+                    time.sleep(0.2)  # 데이터가 없으면 잠시 대기
                     continue
                 
-                # 현재 KST 시간을 한 번만 계산 (타임존 변환 최적화)
+                # 2. 현재 KST 시간 한 번만 계산
                 current_time_kst = get_current_time()
                 
-                # 배치 데이터 전처리 - 타임존과 같은 공통 값을 미리 설정
-                # 이렇게 하면 매번 변환할 필요가 없음
+                # 3. 일괄 전처리
                 for item in batch:
                     item['retrieved_at_val'] = current_time_kst
                 
-                # 벌크 인서트 실행
-                retries = 0
-                success = False
-                session = None
-                
-                while not success and retries < MAX_RETRIES:
-                    # 세션 시작 전 짧은 대기 (이전 세션이 완전히 정리되도록)
-                    if retries > 0:
-                        time.sleep(RETRY_DELAY * retries)  # 지수 백오프
+                # 4. 고속 배치 처리
+                try:
+                    # 4-1. Advisory lock 사용하여 데드락 방지
+                    lock_stmt = text(f"SELECT pg_advisory_xact_lock({worker_id})")
+                    session.execute(lock_stmt)
                     
-                    session = ScopedSession()
+                    # 4-2. COPY 명령을 사용한 고성능 데이터 삽입 구현
+                    # 직접 연결을 통해 COPY 프로토콜 사용 (SQLAlchemy보다 훨씬 빠름)
                     try:
-                        # 타임존 설정 (KST 타임존 유지)
-                        session.execute(text('SET TIME ZONE \'Asia/Seoul\''))
+                        # SQLAlchemy 세션과 완전히 분리된 새 psycopg2 연결 생성
+                        # 트랜잭션 경계 문제 해결을 위한 유틸리티 함수 사용
+                        conn = create_db_connection(application_name=f"COPY_Worker_{worker_id}")
+                        cur = conn.cursor()
+                        # KST 타임존은 이미 create_db_connection 함수에서 설정됨
                         
-                        # 벌크 인서트 쿼리 - 데드락 방지를 위한 최적화
+                        # 임시 테이블 네이밍 개선: 일관된 이름 사용과 DROP-CREATE 방식
+                        # 메타데이터 캐시 누적 방지를 위해 몇 개의 고정된 테이블만 사용
+                        tmp_table_name = f"temp_ranking_import_{worker_id}"
+                        
+                        # 기존 테이블이 있으면 먼저 DROP
+                        cur.execute(f"DROP TABLE IF EXISTS {tmp_table_name}")
+                        
+                        # 새 테이블 생성
+                        cur.execute(f"""
+                            CREATE TEMP TABLE {tmp_table_name} (
+                                rank_position INTEGER,
+                                change_amount INTEGER, 
+                                change_type VARCHAR(10),
+                                server_name VARCHAR(20),
+                                character_name VARCHAR(50),
+                                class_name VARCHAR(30),
+                                power_value INTEGER,
+                                div INTEGER,
+                                retrieved_at TIMESTAMP WITH TIME ZONE
+                            )
+                        """)
+                        
+                        # StringIO 버퍼 생성 및 데이터 기록
+                        buf = io.StringIO()
+                        for item in batch:
+                            # 데이터를 탭으로 구분된 형식으로 변환
+                            buf.write(f"{item['rank']}\t{item['change']}\t{item['change_type']}\t"
+                                     f"{item['server']}\t{item['character']}\t{item['class']}\t"
+                                     f"{item['power']}\t{item['div']}\t{item['retrieved_at_val']}\n")
+                        
+                        # 버퍼를 시작 위치로 되돌림
+                        buf.seek(0)
+                        
+                        # COPY 명령으로 임시 테이블에 데이터 삽입 (초고속)
+                        cur.copy_from(
+                            buf, 
+                            tmp_table_name, 
+                            sep='\t',
+                            columns=('rank_position', 'change_amount', 'change_type', 'server_name',
+                                     'character_name', 'class_name', 'power_value', 'div', 'retrieved_at')
+                        )
+                        
+                        # 임시 테이블에서 UPSERT 수행 (기존 항목 업데이트, 새 항목 삽입)
+                        cur.execute(f"""
+                            INSERT INTO mabinogi_ranking 
+                            (rank_position, change_amount, change_type, server_name, 
+                             character_name, class_name, power_value, div, retrieved_at)
+                            SELECT rank_position, change_amount, change_type, server_name,
+                                   character_name, class_name, power_value, div, retrieved_at
+                            FROM {tmp_table_name}
+                            ON CONFLICT (character_name, server_name, div) 
+                            DO UPDATE SET 
+                                rank_position = EXCLUDED.rank_position,
+                                change_amount = EXCLUDED.change_amount,
+                                change_type = EXCLUDED.change_type,
+                                class_name = EXCLUDED.class_name,
+                                power_value = EXCLUDED.power_value,
+                                retrieved_at = EXCLUDED.retrieved_at
+                        """)
+                        
+                        # 변경사항 커밋
+                        conn.commit()
+                        
+                        # 정리
+                        cur.close()
+                        conn.close()
+                        
+                        logger.debug(f"COPY 프로토콜로 {len(batch)}개 항목 성공적으로 처리 (워커 {worker_id})")
+                        
+                    except Exception as copy_error:
+                        # COPY 실패 시 기존 방식으로 폴백
+                        logger.warning(f"COPY 실패, 기존 INSERT 방식으로 대체: {str(copy_error)[:200]}")
+                        
+                        # 기존 INSERT...ON CONFLICT 쿼리 정의 (폴백)
                         stmt = text("""
                             INSERT INTO mabinogi_ranking 
                             (rank_position, change_amount, change_type, server_name, 
@@ -689,245 +893,257 @@ def db_worker(worker_id):
                                 retrieved_at = EXCLUDED.retrieved_at
                         """)
                         
-                        # 데이터 배치 삽입 실행 - 안정적인 트랜잭션 관리
-                        # 단순하게 실행하고 명시적으로 커밋
-                        try:
-                            session.execute(stmt, batch)  # 실행
-                            session.commit()  # 명시적 커밋
-                        except Exception as inner_ex:
-                            # 내부 예외 발생 시 기존 처리방식으로 처리
-                            session.rollback()  # 오류 발생 시 롤백
-                            raise inner_ex  # 예외 다시 던지기
-                            
-                            # 즉시 커밋 (with 블록 내에서 자동 커밋됨)
-                        
-                        # 성공 시
-                        success = True
-                        processed = len(batch)
-                        total_processed += processed
-                        batch_count += 1
-                        last_error_count = 0  # 성공 시 오류 카운터 리셋
-                        
-                        # 통계 업데이트 (큐 사이즈 실시간 확인)
+                        # 하나의 트랜잭션으로 실행
+                        session.execute(stmt, batch)
+                        session.commit()
+                    
+                    # 4-4. 성공 처리
+                    processed = len(batch)
+                    total_processed += processed
+                    batch_count += 1
+                    last_error_count = 0
+                    
+                    # 4-5. 통계 업데이트 (자주 하지 않도록 제한)
+                    if batch_count % stats_update_interval == 0:
                         queue_size = db_queue.qsize()
                         update_db_stats(
-                            processed=processed, 
-                            queue_size=queue_size, 
+                            processed=processed,
+                            queue_size=queue_size,
                             batch_size=processed
                         )
+                        logger.info(f"작업자 {worker_id}: 총 {total_processed:,}개 항목 처리, 초당 평균: {processed/(time.time()-start_time):.1f}개, 큐: {queue_size:,}")
                         
-                        # 처리 속도 로깅 (100배치마다, 너무 자주 로깅하지 않도록 조정)
-                        if batch_count % 100 == 0:
-                            logger.info(f"작업자 {worker_id}: 총 {total_processed:,}개 항목 처리 완료, 큐 크기: {queue_size:,}")
-                                
-                    except Exception as e:
-                        error_msg = str(e)[:200] if str(e) else "알 수 없는 오류"
-                        
-                        if session:
-                            try:
-                                session.rollback()
-                            except Exception as rollback_error:
-                                logger.error(f"롤백 중 오류: {str(rollback_error)[:100]}")
-                        
-                        retries += 1
-                        last_error_count += 1
-                        
-                        # 오류 로깅 (너무 많은 반복 로그는 피함)
-                        if retries == 1 or retries == MAX_RETRIES:
-                            logger.error(f"배치 처리 실패 (시도 {retries}/{MAX_RETRIES}): {error_msg}")
-                        
-                        # 최대 재시도 횟수 초과 시
-                        if retries >= MAX_RETRIES:
-                            logger.error(f"배치 처리 포기: {len(batch)}개 항목, 연속 오류: {last_error_count}")
-                            # 연속 오류가 많으면 복구를 위해 더 오래 대기
-                            if last_error_count > 5:
-                                time.sleep(5)  # 5초 휴식 후 다음 배치로
-                    finally:
-                        # 세션 정리 (무조건 실행)
-                        if session:
-                            try:
-                                session.close()
-                                # 세션이 완전히 정리되도록 함
-                                ScopedSession.remove()
-                                # GC 도움
-                                session = None
-                            except Exception as session_close_error:
-                                logger.error(f"세션 종료 오류: {str(session_close_error)[:100]}")
-                
-                # 주기적으로 가비지 컬렉션 실행 (메모리 관리)
-                # 배치 카운트 값에 따라 가비지 컬렉션 주기 조정 (메모리 관리 최적화)
-                if batch_count % 30 == 0:
-                    gc.collect()
+                except Exception as db_error:
+                    # 4-6. 오류 처리 - 트랜잭션 롤백 및 세션 재설정
+                    last_error_count += 1
+                    logger.error(f"DB 오류 (워커 {worker_id}): {str(db_error)[:200]}")
                     
-                # 배치 처리 후 주기적으로 상황판 업데이트 (너무 자주 하지 않도록 조정)
-                if batch_count % 10 == 0:
-                    display_stats_dashboard()
+                    # 모든 에러에서 세션 완전 재생성 일관성 개선
+                    try:
+                        # 롤백 먼저 시도
+                        try:
+                            session.rollback()
+                        except Exception as rollback_error:
+                            logger.error(f"롤백 실패: {str(rollback_error)[:100]}")
+                        
+                        # 어떤 경우든 세션 완전 재생성 수행
+                        # "롤백 실패 시"에만 재생성하는 것이 아니라 모든 오류에서 재생성
+                        session.close()
+                        ScopedSession.remove()  # 세션 레지스트리에서 제거 (중요)
+                        
+                        # 세션 완전 재생성 - create_sqlalchemy_session 함수 사용
+                        session = create_sqlalchemy_session(recreate=True)
+                        logger.info(f"DB 오류 후 세션 재생성 완료 (워커 {worker_id})")
+                    except Exception as session_error:
+                        logger.error(f"세션 재생성 실패: {str(session_error)[:100]}")
+                    
+                    # 오류 발생 시 지수 백오프 대기
+                    wait_time = min(0.5 * (2 ** last_error_count), RETRY_DELAY_MAX)
+                    time.sleep(wait_time)
                 
+                # 5. 주기적 관리 작업 (자주 하지 않도록 제한)
+                # 가비지 컬렉션 및 상황판 업데이트
+                if batch_count % 100 == 0:
+                    gc.collect()
+                if batch_count % 50 == 0:
+                    display_stats_dashboard()
+                    
             except Exception as worker_error:
-                # 작업자 수준 오류 로깅 및 대기
                 logger.error(f"작업자 {worker_id} 일반 오류: {str(worker_error)[:200]}")
-                time.sleep(1)  # 오류 발생 시 잠시 대기
+                time.sleep(0.5)
                 last_error_count += 1
                 
-                # 연속 오류가 너무 많으면 더 오래 대기 (자가 복구)
                 if last_error_count > 10:
-                    logger.warning(f"작업자 {worker_id} 연속 오류 ({last_error_count}회) 감지, 10초 휴식")
-                    time.sleep(10)
-                    last_error_count = 0  # 휴식 후 카운터 리셋
+                    # 연속 오류 과다 - 재시작 처리
+                    logger.warning(f"작업자 {worker_id} 재시작 필요 (연속 오류 {last_error_count}회)")
+                    
+                    # SQLAlchemy 세션 재생성 및 초기화 (유틸리티 함수 사용)
+                    try:
+                        # 기존 세션을 제거하고 새로 생성하는 통합 함수 사용
+                        session = create_sqlalchemy_session(recreate=True)
+                        logger.info(f"DB 워커 #{worker_id} - 세션 재생성 성공 (KST 타임존 적용됨)")
+                    except Exception as session_error:
+                        logger.error(f"DB 워커 #{worker_id} - 세션 재생성 실패! 예외 발생: {str(session_error)[:200]}")
+                        
+                        # 시스템 재시작 문제로 시스템 로그 기록 후 예외 다시 발생
+                        time.sleep(10)  # 재연결 시도 전 대기
+                        raise
+                        
+                    # 공간 확보를 위한 가비지 커렉션
+                    gc.collect()
+                    
+                    # 잠시 쉬고 재시작
+                    time.sleep(5)
+                    last_error_count = 0
     
     except Exception as fatal_error:
         logger.error(f"DB 작업자 {worker_id} 치명적 오류: {str(fatal_error)}", exc_info=True)
     finally:
+        # 종료 처리
         try:
+            session.close()
             ScopedSession.remove()
         except Exception:
-            pass  # 종료 시 예외 무시
+            pass
             
         update_thread_status(thread_name, "종료됨")
         logger.info(f"DB 작업자 #{worker_id} 종료. 총 처리 항목: {total_processed:,}")
+        
+        # 메모리 정리
+        gc.collect()
 
 
 def save_to_db_directly(data, div=1):
-    """로깅 등 특별한 경우 직접 DB에 저장 (고성능 버전)
-    
-    Args:
-        data: 저장할 데이터 (단일 딕셔너리 또는 딕셔너리 리스트)
-        div: 랭킹 분류 (기본값: 1)
-        
-    주의: 데드락 발생 가능성이 있으니 데이터브레이커 모듈과 같이 필수적인 경우만 사용
-    """
+    """순위 데이터를 고성능으로 DB에 저장하는 함수 (최적화된 UPSERT 방식)"""
     if not data:
-        return
+        logger.info("저장할 데이터가 없습니다.")
+        return 0
         
-    session = None
+    logger.info(f"{len(data)}개 데이터 고성능 DB 저장 시작...")
+    start_time = time.time()
+    
+    # 고성능 처리를 위한 설정
+    OPTIMAL_BATCH_SIZE = 1000  # 최적화된 배치 크기
+    MAX_RETRIES = 3
+    
+    # 데이터가 리스트가 아니면 리스트로 변환
+    if not isinstance(data, list):
+        data = [data]
+        
+    # KST 시간 한 번만 계산 (중요: KST 유지)
+    current_time = get_current_time()
+    
+    # 필요한 필드 추가 - 일괄 처리
+    for item in data:
+        item['div'] = div
+        item['retrieved_at_val'] = current_time
+    
+    # 통계 추적
+    total_processed = 0
+    processing_times = []
+    
+    # 전체 데이터를 적절한 크기의 배치로 분할
+    batches = [data[i:i + OPTIMAL_BATCH_SIZE] for i in range(0, len(data), OPTIMAL_BATCH_SIZE)]
+    batch_count = len(batches)
+    logger.debug(f"{batch_count}개 배치로 분할됨 (각 최대 {OPTIMAL_BATCH_SIZE}개)")
+    
+    # 하나의 세션을 재사용하여 전체 처리 (성능 최적화)
+    session = ScopedSession()
+    
     try:
-        # 데이터가 리스트가 아니면 리스트로 변환
-        if not isinstance(data, list):
-            data = [data]
+        # 한 번만 KST 타임존 설정 (중요: 항상 KST 유지)
+        session.execute(text('SET TIME ZONE \'Asia/Seoul\''))
         
-        # 배치 크기 (한 번에 처리할 레코드 수)
-        BATCH_SIZE = 1000
+        # UPSERT 쿼리 생성 - 데드락 방지 최적화
+        upsert_stmt = text("""
+            INSERT INTO mabinogi_ranking 
+            (rank_position, change_amount, change_type, server_name, 
+             character_name, class_name, power_value, div, retrieved_at)
+            VALUES 
+            (:rank, :change, :change_type, :server, 
+             :character, :class, :power, :div, :retrieved_at_val)
+            ON CONFLICT (character_name, server_name, div) 
+            DO UPDATE SET 
+                rank_position = EXCLUDED.rank_position,
+                change_amount = EXCLUDED.change_amount,
+                change_type = EXCLUDED.change_type,
+                class_name = EXCLUDED.class_name,
+                power_value = EXCLUDED.power_value,
+                retrieved_at = EXCLUDED.retrieved_at
+        """)
         
-        # 전체 데이터를 배치 크기로 분할
-        for i in range(0, len(data), BATCH_SIZE):
-            batch = data[i:i + BATCH_SIZE]
-            retries = 0
-            max_retries = 3
+        # 배치별 처리
+        for batch_idx, batch in enumerate(batches):
+            batch_start = time.time()
             success = False
+            retry_count = 0
             
-            while not success and retries < max_retries:
-                session = ScopedSession()
+            # 재시도 루프
+            while not success and retry_count < MAX_RETRIES:
                 try:
-                    # 트랜잭션 시작 전에 KST 타임존 설정
-                    session.execute(text('SET TIME ZONE \'Asia/Seoul\''))
+                    # Advisory lock 사용으로 데드락 방지 (옵션)
+                    lock_id = hash(f"direct_save_{batch_idx}") % 2147483647  # 양수 32비트 정수 범위
+                    session.execute(text(f"SELECT pg_advisory_xact_lock({lock_id})"))
                     
-                    # 벌크 인서트 쿼리 - db_worker 함수와 일관된 방식으로 수정
-                    stmt = text("""
-                        INSERT INTO mabinogi_ranking 
-                        (rank_position, change_amount, change_type, server_name, 
-                         character_name, class_name, power_value, div, retrieved_at)
-                        VALUES 
-                        (:rank, :change, :change_type, :server, 
-                         :character, :class, :power, :div, :retrieved_at_val)
-                        ON CONFLICT (character_name, server_name, div) 
-                        DO UPDATE SET 
-                            rank_position = EXCLUDED.rank_position,
-                            change_amount = EXCLUDED.change_amount,
-                            change_type = EXCLUDED.change_type,
-                            class_name = EXCLUDED.class_name,
-                            power_value = EXCLUDED.power_value,
-                            retrieved_at = EXCLUDED.retrieved_at
-                    """)
+                    # 하나의 트랜잭션으로 처리
+                    session.execute(upsert_stmt, batch)
+                    session.commit()
                     
-                    # 배치 파라미터 준비
-                    params_list = []
-                    for item in batch:
-                        # 콤마가 포함된 문자열을 숫자로 변환
-                        rank_position = int(item['rank'].replace(',', '').replace('위', ''))
-                        power_value = int(item['power'].replace(',', ''))
-                        
-                        # change 값 처리
-                        change_value = item['change']
-                        if change_value == '-':
-                            change_value = '0'
-                            
-                        # change_type이 'down'인 경우 음수로 변환 (랭킹이 내려간 경우)
-                        change_value_int = int(change_value.replace(',', ''))
-                        if item['change_type'] == 'down':
-                            change_value_int = -change_value_int
-                        
-                        params_list.append({
-                            'rank': rank_position,
-                            'change': change_value_int,
-                            'change_type': item['change_type'],
-                            'server': item['server'],
-                            'character': item['character'],
-                            'class': item['class'],
-                            'power': power_value,
-                            'div': div,
-                            'retrieved_at_val': get_current_time()  # KST 시간 사용
-                        })
-                    
-                    # 배치 실행 - 단순하게 실행하고 명시적으로 커밋
-                    session.execute(stmt, params_list)
-                    session.commit()  # 명시적 커밋
-                    
-                    # 성공 시
                     success = True
-                    logger.debug(f"직접 저장 완료: {len(batch)}개 항목 (배치 {i//BATCH_SIZE + 1}/{(len(data)-1)//BATCH_SIZE + 1})")
+                    processed = len(batch)
+                    total_processed += processed
                     
+                    batch_time = time.time() - batch_start
+                    processing_times.append(batch_time)
+                    
+                    # 성능 측정 및 현황 보고 (제한된 비율로)
+                    if batch_idx % 10 == 0 or batch_idx == batch_count - 1:
+                        progress = (batch_idx + 1) / batch_count * 100
+                        speed = processed / batch_time if batch_time > 0 else 0
+                        logger.info(f"DB 저장 진행: {progress:.1f}% ({batch_idx+1}/{batch_count}), "
+                                  f"초당 {speed:.1f}개, 남은 시간: "
+                                  f"{(batch_count-batch_idx-1)*(sum(processing_times)/(batch_idx+1)):.1f}초")
+                        
                 except Exception as e:
-                    retries += 1
-                    if session:
-                        try:
-                            session.rollback()
-                        except Exception as rb_error:
-                            logger.error(f"롤백 오류 무시: {str(rb_error)[:100]}")
-                            # 롤백 오류는 무시하고 계속 진행
+                    retry_count += 1
+                    session.rollback()  # 중요: 오류 발생 시 롤백
                     
-                    if retries >= max_retries:
-                        logger.error(f"직접 저장 실패 (배치 {i//BATCH_SIZE + 1}): {str(e)[:200]}")
-                        raise
+                    error_msg = str(e)[:200] if str(e) else "알 수 없는 오류"
+                    logger.warning(f"배치 {batch_idx + 1}/{batch_count} 처리 실패 (재시도 {retry_count}/{MAX_RETRIES}): {error_msg}")
                     
-                    # 지수 백오프로 대기
-                    wait_time = min((2 ** retries) * 0.5, RETRY_DELAY_MAX)  # 최대 대기 시간 제한
-                    logger.warning(f"재시도 {retries}/{max_retries}: 배치 {i//BATCH_SIZE + 1} 재시도 중... (대기 시간: {wait_time:.1f}초)")
+                    # 재시도 전 지수 백오프 대기
+                    wait_time = min(1 * (2 ** retry_count), 10)
                     time.sleep(wait_time)
                     
-                finally:
-                    if session:
-                        session.close()
-                        ScopedSession.remove()
-    
+                    # 세션 상태 확인 및 필요시 재생성
+                    if retry_count >= 2:
+                        try:
+                            # 세션 안전하게 정리
+                            session.close()
+                            ScopedSession.remove()  # 세션 레지스트리에서도 제거
+                        except Exception as close_error:
+                            logger.error(f"세션 정리 중 오류: {str(close_error)[:100]}, 새 세션 생성 계속")
+                        finally:
+                            # 세션 완전 재생성
+                            session = ScopedSession()
+                            
+                            # KST 타임존 설정 (중요) - 항상 KST 유지
+                            session.execute(text('SET TIME ZONE \'Asia/Seoul\''))
+                            logger.info(f"배치 {batch_idx + 1} 처리를 위한 세션 재생성 완료")
+                            
+                            # 공간 확보를 위한 가비지 커렉션
+                            gc.collect()
+            
+            # 최대 재시도 초과 시
+            if not success:
+                logger.error(f"배치 {batch_idx + 1}/{batch_count} 처리 포기 (최대 재시도 {MAX_RETRIES}회 초과)")
+        
+        # 전체 처리 통계
+        total_time = time.time() - start_time
+        avg_batch_time = sum(processing_times) / len(processing_times) if processing_times else 0
+        records_per_second = total_processed / total_time if total_time > 0 else 0
+        
+        logger.info(f"DB 저장 완료: 총 {total_processed}/{len(data)}개 항목 처리")
+        logger.info(f"✨ 총 소요시간: {total_time:.2f}초, 초당 {records_per_second:.1f}개 처리, "
+                   f"배치당 평균 {avg_batch_time:.3f}초")
+        
+        return total_processed
+        
     except Exception as e:
-        logger.error(f"직접 저장 중 치명적 오류: {str(e)}", exc_info=True)
-        raise
-    
+        # 전체 처리 중 예외 발생 시
+        logger.error(f"DB 저장 중 예외 발생: {str(e)[:200]}", exc_info=True)
+        return total_processed
     finally:
-        if session:
-            ScopedSession.remove()
-    
-    def get_driver(self):
-        """사용 가능한 드라이버를 가져옴, 없으면 새로 생성"""
-        with self.lock:
-            if not self.pool:
-                return get_driver(self.high_performance)
-            return self.pool.pop()
-    
-    def return_driver(self, driver):
-        """사용 완료된 드라이버를 풀에 반환"""
-        with self.lock:
-            self.pool.append(driver)
-    
-    def close_all(self):
-        """모든 드라이버 종료"""
-        with self.lock:
-            for driver in self.pool:
-                try:
-                    driver.quit()
-                except:
-                    pass
-            self.pool = []
+        # 세션 정리 확인
+        try:
+            if session:
+                session.close()
+                ScopedSession.remove()
+        except Exception as cleanup_error:
+            logger.error(f"종료 정리 중 오류: {str(cleanup_error)[:100]}")
+        
+        # 가비지 커렉션 추가
+        gc.collect()
 
 # DB 큐 및 안전한 크롤링을 위한 임계값 설정 (최적화된 값으로 조정)
 MAX_QUEUE_SIZE = 100000  # DB 큐 최대 크기 (이 이상이면 크롤링 일시 중단, 5배 증가)
@@ -940,104 +1156,9 @@ STATUS_CHECK_INTERVAL = 3  # 상태 확인 주기(초), 더 빠른 반응을 위
 # 크롤링 일시 정지 상태 저장용 이벤트 객체
 crawling_paused = {}
 
-# 서버별 통계 관리를 위한 변수
-server_stats = {}
-# DB 통계
-db_stats = {
-    "processed": 0,
-    "queue_size": 0,
-    "batch_size": 0,
-    "rate": 0.0,
-    "last_calc_time": datetime.now(KST),
-    "last_processed": 0,
-    "paused": False  # 전체 크롤링 일시 정지 여부
-}
+# 이미 상단에 정의된 server_stats, db_stats 사용
 last_dashboard_update = datetime.now(KST)
 dashboard_update_interval = 5  # 초 단위
-
-def update_server_stats(server_name, items_collected=0, items_flushed=0):
-    """서버별 통계 정보 갱신"""
-    global server_stats
-    if server_name not in server_stats:
-        server_stats[server_name] = {
-            "total_collected": 0,
-            "total_flushed": 0,
-            "collector_size": 0,
-            "last_update": datetime.now(KST)
-        }
-    
-    server_stats[server_name]["total_collected"] += items_collected
-    server_stats[server_name]["total_flushed"] += items_flushed
-    server_stats[server_name]["last_update"] = datetime.now(KST)
-
-def update_collector_size(server_name, size):
-    """콜렉터 사이즈 갱신"""
-    global server_stats
-    if server_name in server_stats:
-        server_stats[server_name]["collector_size"] = size
-
-def update_db_stats(processed=0, queue_size=0, batch_size=0):
-    """데이터베이스 통계 정보 갱신"""
-    global db_stats
-    db_stats["processed"] += processed
-    db_stats["queue_size"] = queue_size
-    db_stats["batch_size"] = batch_size
-    now = datetime.now(KST)
-    
-    # 속도 계산 (1분 동안의 평균)
-    if (now - db_stats.get("last_calc_time", now - timedelta(minutes=1))).total_seconds() > 60:
-        # 1분마다 평균 속도 계산
-        time_diff = (now - db_stats.get("last_calc_time", now - timedelta(minutes=1))).total_seconds()
-        if time_diff > 0:
-            processed_diff = db_stats["processed"] - db_stats.get("last_processed", 0)
-            db_stats["rate"] = processed_diff / time_diff
-        db_stats["last_calc_time"] = now
-        db_stats["last_processed"] = db_stats["processed"]
-
-def display_stats_dashboard():
-    """통계 상황판 출력 (5초마다)"""
-    global last_stats_display, stats_display_interval
-    now = datetime.now(KST)
-    
-    # 지정된 간격마다만 상황판 업데이트
-    if (now - last_stats_display).total_seconds() < stats_display_interval:
-        return
-    
-    last_stats_display = now
-    
-    # 현재 시간 표시
-    time_str = now.strftime("%Y-%m-%d %H:%M:%S KST")
-    
-    # 출력할 상황판 문자열 생성
-    dashboard = f"\n{'-'*80}\n"
-    dashboard += f"[{time_str}] 데이터 수집 상황\n"
-    dashboard += f"{'-'*80}\n"
-    
-    # 서버별 통계
-    dashboard += "\n[서버별 통계]\n"
-    dashboard += "{:<10} {:<15} {:<15} {:<15} {:<20}\n".format("서버", "수집된 항목", "저장된 항목", "현재 배치", "크롤링 순위 구간")
-    dashboard += "-" * 80 + "\n"
-    
-    for server, stats in server_stats.items():
-        dashboard += "{:<10} {:<15,d} {:<15,d} {:<15,d} {:<20}\n".format(
-            server,
-            stats["total_collected"],
-            stats["total_flushed"],
-            stats["collector_size"],
-            stats.get("rank_range", "미정보")
-        )
-    
-    # DB 통계
-    dashboard += "\n[DB 통계]\n"
-    dashboard += f"\ud504로세스된 항목: {db_stats['processed']:,d}\n"
-    dashboard += f"큐 사이즈: {db_stats['queue_size']:,d}\n"
-    dashboard += f"최근 배치 크기: {db_stats['batch_size']:,d}\n"
-    dashboard += f"평균 처리 속도: {db_stats['rate']:.2f} 항목/초\n"
-    
-    dashboard += f"{'-'*80}\n"
-    
-    # 로그로 출력
-    logger.info(dashboard)
 
 # 배치 처리를 위한 데이터 수집기
 class DataCollector:
@@ -1622,6 +1743,16 @@ def sequential_rank_crawl_worker(server_num, div=1):
 def start_sequential_rank_crawling():
     """모든 서버에 대해 순차적 랭킹 크롤링 시작"""
     try:
+        # DB 워커 준비 시그널 확인 (중요: 순서 보장)
+        if not db_workers_ready.is_set():
+            logger.warning("DB 워커가 아직 준비되지 않았습니다. 대기 중...")
+            # 워커 준비 완료 시그널을 기다림 (최대 30초)
+            ready = db_workers_ready.wait(timeout=30)
+            if not ready:
+                logger.warning("DB 워커 준비 완료 시그널을 받지 못했지만, 강제로 시작합니다.")
+            else:
+                logger.info("DB 워커 준비 완료, 크롤링을 시작합니다.")
+        
         logger.info("순차적 랭킹 크롤링 시작")
         
         # 처리된 캐릭터 세트 초기화
@@ -1771,7 +1902,8 @@ def save_db_history(db, operation_type, object_type, object_id=None, details=Non
     # 새 세션을 사용하여 트랜잭션 충돌 방지
     own_db = False
     if db is None:
-        db = SessionLocal()
+        # KST 타임존이 적용된 세션 생성 (유틸리티 함수 사용)
+        db = create_sqlalchemy_session(recreate=False)
         own_db = True
     
     try:
@@ -1823,6 +1955,21 @@ if __name__ == "__main__":
             active_threads.append(db_worker_thread)
             logger.info(f"DB 작업자 쓰레드 #{i} 시작됨")
         logger.info(f"총 {DB_WORKER_COUNT}개의 DB 쓰레드가 병렬로 동작 중")
+        
+        # DB 워커 준비 완료 시그널 대기 (중요: 순서 보장)
+        logger.info("워커 쓰레드들이 준비되기를 기다리는 중...")
+        
+        # 워커 준비 완료 시그널을 기다림 (30초 타임아웃)
+        # 카운트다운 래치 방식으로 DB 워커들이 스스로 준비 완료시 시그널을 보냄
+        ready_success = db_workers_ready.wait(timeout=30)
+        
+        if ready_success:
+            logger.info(f"모든 DB 워커 쓰레드({DB_WORKER_COUNT}개) 준비 완료되었습니다. 크롤링을 시작합니다.")
+        else:
+            # 타임아웃이 발생해도 계속 진행 (고장상황 대비)
+            logger.warning(f"DB 워커 준비 시그널 타임아웃 (30초). 현재 {worker_ready_count}/{DB_WORKER_COUNT} 워커만 준비됨. 그래도 계속 진행합니다.")
+            # 시그널을 강제로 설정하여 크롤링 진행
+            db_workers_ready.set()
         
         # 랭킹 크롤링 시작
         start_sequential_rank_crawling()
