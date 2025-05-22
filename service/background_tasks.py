@@ -283,6 +283,7 @@ def update_patch_notes_task():
                 if new_count > 0:
                     print(f"[{now.strftime('%Y-%m-%d %H:%M:%S KST')}] 새로운 패치노트 {new_count}개가 저장되었습니다.")
                 else:
+                    pass
                     # print(f"[{now.strftime('%Y-%m-%d %H:%M:%S KST')}] 새로운 패치노트가 없습니다.")
                     
                 # 마지막 체크 시간 업데이트
