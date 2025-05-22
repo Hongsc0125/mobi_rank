@@ -4,6 +4,7 @@ from bs4 import BeautifulSoup
 from datetime import datetime
 import json
 import re
+import pytz
 from sqlalchemy import text
 
 from service.db_session import KST, KadanSessionLocal
