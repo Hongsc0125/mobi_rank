@@ -13,7 +13,7 @@ from service.db_session import engine
 import os
 from datetime import datetime
 from service.population_statistics import update_population_statistics, generate_class_pie_chart, get_latest_class_chart
-from service.html_image_converter import html_to_image, puppeteer_backup_method
+from service.html_image_converter import html_to_image
 from fastapi.responses import FileResponse, JSONResponse
 
 # Configure logging
