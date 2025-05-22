@@ -43,63 +43,95 @@ def fetch_patch_note_list():
         logger.error(f"패치노트 목록 가져오기 실패: {e}")
         return []
 
-def crawl_update_detail(note_id: str):
+def crawl_update_detail(update_id):
     """
     패치노트 상세 내용을 크롤링합니다.
     
     Args:
-        note_id (str): 패치노트 ID
+        update_id (str): 패치노트 ID
         
     Returns:
-        dict: 패치노트 상세 정보
+        dict: 패치노트 상세 데이터
     """
+    url = f"{DETAIL_URL_BASE}{update_id}"
+    BASE = "https://mabinogimobile.nexon.com"
+    
     try:
-        url = f"{DETAIL_URL_BASE}{note_id}"
-        resp = requests.get(url, headers={"User-Agent": "Mozilla/5.0"})
-        resp.raise_for_status()
-        soup = BeautifulSoup(resp.text, "html.parser")
-
-        title_el = soup.select_one("section.view_header_wrap .title_box .title [data-blockcontent]")
+        headers = {
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/136.0.0.0 Safari/537.36 Edg/136.0.0.0"
+            )
+        }
+        response = requests.get(url, headers=headers, timeout=10)
+        response.raise_for_status()
+        
+        soup = BeautifulSoup(response.text, "html.parser")
+        
+        # 1) 제목
+        title_el = soup.select_one(
+            "section.view_header_wrap .title_box .title [data-blockcontent]"
+        )
         title = title_el.get_text(strip=True) if title_el else ""
-
+        
+        # 2) 날짜 (예: "2025.05.15 09:40")
         date_el = soup.select_one("section.view_header_wrap .date span")
+        date_txt = date_el.get_text(strip=True) if date_el else ""
+        # "YYYY.MM.DD hh:mm" → "YYYY-MM-DDThh:mm"
         try:
-            # 한국 시간(KST)으로 변환
-            post_date = datetime.strptime(date_el.text.strip(), "%Y.%m.%d %H:%M")
-            post_date = pytz.timezone('Asia/Seoul').localize(post_date).isoformat()
-        except Exception as e:
-            logger.error(f"날짜 파싱 오류: {e}")
-            post_date = ""
-
-        content_el = soup.select_one("section.view_body_wrap .content_area .content[data-blockcontent]")
+            dt = datetime.strptime(date_txt, "%Y.%m.%d %H:%M")
+            # KST 타임존 적용
+            post_date = KST.localize(dt).isoformat()
+        except ValueError as e:
+            logger.warning(f"날짜 파싱 오류: {e}, 원본 텍스트: {date_txt}")
+            post_date = datetime.now(KST).isoformat()
+        
+        # 3) 본문 HTML
+        content_el = soup.select_one(
+            "section.view_body_wrap .content_area .content[data-blockcontent]"
+        )
         content_html = content_el.decode_contents().strip() if content_el else ""
-
+        
+        # 4) 첨부 파일 (없으면 빈 리스트)
         attachments = []
         for a in soup.select("div.board-files a, div.attach-file a"):
             href = a.get("href", "")
-            full_url = href if href.startswith("http") else f"https://mabinogimobile.nexon.com{href}"
-            attachments.append({"name": a.get_text(strip=True), "url": full_url})
-
-        videos = [iframe.get("src", "") for iframe in content_el.select("iframe")] if content_el else []
-
-        # 현재 시간을 KST로 설정
-        now = datetime.now(KST).isoformat()
+            full_url = href if href.startswith("http") else BASE + href
+            attachments.append({
+                "name": a.get_text(strip=True),
+                "url": full_url
+            })
         
-        result = {
-            "id": note_id,
+        # 5) 동영상 iframe
+        videos = []
+        if content_el:
+            videos = [
+                iframe.get("src", "")
+                for iframe in content_el.select("iframe")
+                if iframe.get("src")
+            ]
+        
+        # 현재 시간 추가 (KST)
+        scraped_at = datetime.now(KST).isoformat()
+        
+        # 사용자가 원하는 데이터 구조
+        data = {
+            "id": update_id,
             "title": title,
             "post_date": post_date,
             "url": url,
             "content_html": content_html,
             "attachments": attachments,
             "videos": videos,
-            "scraped_at": now
+            "scraped_at": scraped_at
         }
         
         logger.info(f"패치노트 상세 정보 크롤링 성공: {title}")
-        return result
+        return data
+        
     except Exception as e:
-        logger.error(f"패치노트 상세 정보 크롤링 실패 (ID: {note_id}): {e}")
+        logger.error(f"패치노트 상세 크롤링 중 오류: {e}")
         return None
 
 def fetch_existing_titles():
@@ -133,7 +165,7 @@ def save_patch_data(data):
     """
     session = KadanSessionLocal()
     try:
-        # 현재 시간(KST) 설정
+        # 현재 시간(KST) 설정 - retrieved_at 필드를 위해
         current_time = datetime.now(KST)
         
         # 데이터 저장
@@ -142,10 +174,12 @@ def save_patch_data(data):
             VALUES (:title, :post_date, :contents_json, :id, :retrieved_at)
         """
         
+        # 사용자가 원하는 형태로 JSON 저장
+        # 전체 데이터를 contents_json에 저장
         params = {
             "title": data["title"],
             "post_date": data["post_date"],
-            "contents_json": json.dumps(data["contents"]),
+            "contents_json": json.dumps(data),  # 전체 데이터를 JSON으로 저장
             "id": data["id"],
             "retrieved_at": current_time
         }
