@@ -165,13 +165,13 @@ def save_patch_data(data):
     """
     session = KadanSessionLocal()
     try:
-        # 현재 시간(KST) 설정 - retrieved_at 필드를 위해
+        # 현재 시간(KST) 설정
         current_time = datetime.now(KST)
         
         # 데이터 저장
         query = """
-            INSERT INTO patch_note_data (title, post_date, contents_json, id, retrieved_at)
-            VALUES (:title, :post_date, :contents_json, :id, :retrieved_at)
+            INSERT INTO patch_note_data (title, post_date, contents_json, id, scraped_at)
+            VALUES (:title, :post_date, :contents_json, :id, :scraped_at)
         """
         
         # 사용자가 원하는 형태로 JSON 저장
@@ -181,7 +181,7 @@ def save_patch_data(data):
             "post_date": data["post_date"],
             "contents_json": json.dumps(data),  # 전체 데이터를 JSON으로 저장
             "id": data["id"],
-            "retrieved_at": current_time
+            "scraped_at": current_time
         }
         
         session.execute(text(query), params)
