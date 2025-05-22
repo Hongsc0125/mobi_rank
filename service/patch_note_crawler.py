@@ -37,7 +37,7 @@ def fetch_patch_note_list():
                 thread_id = match.group(1)
                 notes.append({"title": title, "id": thread_id})
                 
-        logger.info(f"패치노트 목록 {len(notes)}개 가져오기 성공")
+        # logger.info(f"패치노트 목록 {len(notes)}개 가져오기 성공")
         return notes
     except Exception as e:
         logger.error(f"패치노트 목록 가져오기 실패: {e}")
@@ -254,7 +254,8 @@ def check_new_patch_notes():
             logger.info(f"새로운 패치노트 {new_count}개 저장 완료, 업데이트 시그널 전송 시도...")
             send_update_signal()
         else:
-            logger.info("새로운 패치노트가 없어 시그널을 전송하지 않습니다.")
+            pass
+            # logger.info("새로운 패치노트가 없어 시그널을 전송하지 않습니다.")
                 
         return new_count
     except Exception as e:
