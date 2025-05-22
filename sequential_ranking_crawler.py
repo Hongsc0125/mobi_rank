@@ -143,8 +143,9 @@ db_queue = queue.Queue(maxsize=200000)  # 최대 20만 항목으로 제한 (용�
 db_worker_running = threading.Event()   # DB 작업자 쓰레드 상태
 db_worker_running.set()                 # 초기에는 작동 상태로 설정
 
-# DB 작업자 쓰레드 수 (CPU 코어 수에 맞게 조정)
-DB_WORKER_COUNT = 8  # CPU 코어 수에 맞게 조정 (성능 개선을 위해 증가)
+# DB 작업자 쓰레드 수 (CPU 코어 수 및 데드락 방지를 고려하여 최적화)
+DB_WORKER_COUNT = max(2, min(6, psutil.cpu_count() // 2))  # CPU 코어 수의 절반으로 제한하고 최소 2개, 최대 6개로 설정
+# 너무 많은 워커가 동시에 동작하면 데드락 발생 가능성 증가
 db_worker_threads = []  # DB 작업자 쓰레드 목록
 
 # 크롤링 작업 통계 및 상황판 관리
@@ -553,17 +554,24 @@ def insert_ranking_data(data, div=1):
                 if change_value == '-':
                     change_value = '0'
                 
+                # change_type이 'down'인 경우 음수로 변환 (랭킹이 내려간 경우)
+                change_value_int = int(change_value.replace(',', ''))
+                if item['change_type'] == 'down':
+                    change_value_int = -change_value_int
+                else:
+                    change_value_int = abs(change_value_int)  # up인 경우 양수 보장
+                
                 # 데이터 딕셔너리로 준비
                 processed_item = {
                     'rank': rank_position,
-                    'change': int(change_value),
+                    'change': change_value_int,
                     'change_type': item['change_type'],
                     'server': item['server'],
                     'character': item['character'],
                     'class': item['class'],
                     'power': power_value,
                     'div': div,
-                    'retrieved_at_val': current_time_kst
+                    'retrieved_at_val': current_time_kst  # KST 시간 사용
                 }
                 processed_data.append(processed_item)
             except Exception as item_error:
@@ -589,12 +597,13 @@ def db_worker(worker_id):
     update_thread_status(thread_name, "시작됨")
     logger.info(f"DB 작업자 쓰레드 #{worker_id} 시작 (최적화된 고성능 모드)")
     
-    # 배치 크기 (기존보다 2배 증가)
-    BATCH_SIZE = 2000
+    # 배치 크기 (데드락 방지 및 성능 최적화)
+    BATCH_SIZE = 1500  # 너무 큰 배치는 락 경쟁 증가, 너무 작은 배치는 성능 저하
     
-    # 재시도 정책
-    MAX_RETRIES = 5  # 재시도 횟수 증가
-    RETRY_DELAY = 1  # 초
+    # 재시도 정책 (데드락 등 문제 대응)
+    MAX_RETRIES = 7  # 데드락 발생 시 충분한 재시도 보장
+    RETRY_DELAY = 1  # 초 (기본 대기 시간)
+    RETRY_DELAY_MAX = 10  # 최대 대기 시간(초)
     
     total_processed = 0
     batch_count = 0
@@ -662,7 +671,7 @@ def db_worker(worker_id):
                         # 타임존 설정 및 트랜잭션 관련 초기화
                         session.execute(text('SET TIME ZONE \'Asia/Seoul\''))
                         
-                        # 벌크 인서트 쿼리 최적화 (EXCLUDED 참조 대신 직접 값 사용)
+                        # 벌크 인서트 쿼리 최적화 - 데드락 방지를 위한 락 획득 전략 변경
                         stmt = text("""
                             INSERT INTO mabinogi_ranking 
                             (rank_position, change_amount, change_type, server_name, 
@@ -672,17 +681,22 @@ def db_worker(worker_id):
                              :character, :class, :power, :div, :retrieved_at_val)
                             ON CONFLICT (character_name, server_name, div) 
                             DO UPDATE SET 
-                                rank_position = :rank,
-                                change_amount = :change,
-                                change_type = :change_type,
-                                class_name = :class,
-                                power_value = :power,
-                                retrieved_at = :retrieved_at_val
+                                rank_position = EXCLUDED.rank_position,
+                                change_amount = EXCLUDED.change_amount,
+                                change_type = EXCLUDED.change_type,
+                                class_name = EXCLUDED.class_name,
+                                power_value = EXCLUDED.power_value,
+                                retrieved_at = EXCLUDED.retrieved_at
                         """)
                         
-                        # 데이터 배치 삽입 실행 (트랜잭션 자동 관리)
-                        session.execute(stmt, batch)
-                        session.commit()
+                        # 데이터 배치 삽입 실행 - 안정적인 트랜잭션 관리
+                        try:
+                            with session.begin():
+                                session.execute(stmt, batch)
+                            # with 블록을 사용하면 자동으로 커밋되므로 별도 커밋 불필요
+                        except Exception as inner_ex:
+                            # 내부 예외 발생 시 다시 던짐 (상위 예외 처리로 전달)
+                            raise inner_ex
                             
                             # 즉시 커밋 (with 블록 내에서 자동 커밋됨)
                         
@@ -732,12 +746,16 @@ def db_worker(worker_id):
                         if session:
                             try:
                                 session.close()
+                                # 세션이 완전히 정리되도록 함
                                 ScopedSession.remove()
+                                # GC 도움
+                                session = None
                             except Exception as session_close_error:
                                 logger.error(f"세션 종료 오류: {str(session_close_error)[:100]}")
                 
                 # 주기적으로 가비지 컬렉션 실행 (메모리 관리)
-                if batch_count % 50 == 0:
+                # 배치 카운트 값에 따라 가비지 컬렉션 주기 조정 (메모리 관리 최적화)
+                if batch_count % 30 == 0:
                     gc.collect()
                     
                 # 배치 처리 후 주기적으로 상황판 업데이트 (너무 자주 하지 않도록 조정)
@@ -799,15 +817,18 @@ def save_to_db_directly(data, div=1):
             while not success and retries < max_retries:
                 session = ScopedSession()
                 try:
+                    # 트랜잭션 시작 전에 KST 타임존 설정
+                    session.execute(text('SET TIME ZONE \'Asia/Seoul\''))
+                    
                     with session.begin():
-                        # 벌크 인서트 쿼리
+                        # 벌크 인서트 쿼리 - db_worker 함수와 일관된 방식으로 수정
                         stmt = text("""
                             INSERT INTO mabinogi_ranking 
                             (rank_position, change_amount, change_type, server_name, 
                              character_name, class_name, power_value, div, retrieved_at)
                             VALUES 
                             (:rank, :change, :change_type, :server, 
-                             :character, :class, :power, :div, :retrieved_at_val AT TIME ZONE 'Asia/Seoul')
+                             :character, :class, :power, :div, :retrieved_at_val)
                             ON CONFLICT (character_name, server_name, div) 
                             DO UPDATE SET 
                                 rank_position = EXCLUDED.rank_position,
@@ -844,15 +865,20 @@ def save_to_db_directly(data, div=1):
                                 'class': item['class'],
                                 'power': power_value,
                                 'div': div,
-                                'retrieved_at_val': get_current_time()
+                                'retrieved_at_val': get_current_time()  # KST 시간 사용
                             })
                         
-                        # 배치 실행
-                        session.execute(stmt, params_list)
-                    
-                    # 성공 시
-                    success = True
-                    logger.debug(f"직접 저장 완료: {len(batch)}개 항목 (배치 {i//BATCH_SIZE + 1}/{(len(data)-1)//BATCH_SIZE + 1})")
+                        # 배치 실행 - 안정적인 트랜잭션 관리
+                        try:
+                            session.execute(stmt, params_list)
+                            # with 블록 내에서 자동으로 커밋됨
+                        except Exception as inner_ex:
+                            # 내부 예외 발생 시 다시 던짐
+                            raise inner_ex
+                        
+                        # 성공 시
+                        success = True
+                        logger.debug(f"직접 저장 완료: {len(batch)}개 항목 (배치 {i//BATCH_SIZE + 1}/{(len(data)-1)//BATCH_SIZE + 1})")
                     
                 except Exception as e:
                     retries += 1
@@ -864,8 +890,9 @@ def save_to_db_directly(data, div=1):
                         raise
                     
                     # 지수 백오프로 대기
-                    time.sleep((2 ** retries) * 0.1)
-                    logger.warning(f"재시도 {retries}/{max_retries}: 배치 {i//BATCH_SIZE + 1} 재시도 중...")
+                    wait_time = min((2 ** retries) * 0.5, RETRY_DELAY_MAX)  # 최대 대기 시간 제한
+                    logger.warning(f"재시도 {retries}/{max_retries}: 배치 {i//BATCH_SIZE + 1} 재시도 중... (대기 시간: {wait_time:.1f}초)")
+                    time.sleep(wait_time)
                     
                 finally:
                     if session:
