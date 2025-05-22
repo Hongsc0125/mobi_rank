@@ -231,27 +231,27 @@ def get_class_chart():
 
 
 # HTML을 이미지로 변환하는 엔드포인트
-@app.post("/html_to_image", summary="HTML 테이블을 이미지로 변환")
-def convert_html_to_image(req: HtmlImageReq):
-    try:
-        # HTML 검증 및 전처리 (빈 셀 처리)
-        processed_html = req.html.replace("<td></td>", "<td>&nbsp;</td>")
+# @app.post("/html_to_image", summary="HTML 테이블을 이미지로 변환")
+# def convert_html_to_image(req: HtmlImageReq):
+#     try:
+#         # HTML 검증 및 전처리 (빈 셀 처리)
+#         processed_html = req.html.replace("<td></td>", "<td>&nbsp;</td>")
         
-        # HTML을 이미지로 변환
-        result = html_to_image(processed_html)
+#         # HTML을 이미지로 변환
+#         result = html_to_image(processed_html)
         
-        if result["success"]:
-            return {
-                "success": True,
-                "imageUrl": result["imageUrl"],
-                "message": "HTML 테이블 이미지 변환 성공"
-            }
-        else:
-            raise HTTPException(status_code=500, detail="HTML 테이블 이미지 변환 실패")
+#         if result["success"]:
+#             return {
+#                 "success": True,
+#                 "imageUrl": result["imageUrl"],
+#                 "message": "HTML 테이블 이미지 변환 성공"
+#             }
+#         else:
+#             raise HTTPException(status_code=500, detail="HTML 테이블 이미지 변환 실패")
     
-    except Exception as e:
-        logger.error(f"HTML 테이블 이미지 변환 중 오류 발생: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"HTML 테이블 이미지 변환 오류: {str(e)}")
+#     except Exception as e:
+#         logger.error(f"HTML 테이블 이미지 변환 중 오류 발생: {str(e)}")
+#         raise HTTPException(status_code=500, detail=f"HTML 테이블 이미지 변환 오류: {str(e)}")
 
 # Start background tasks when the server starts
 @app.on_event("startup")
