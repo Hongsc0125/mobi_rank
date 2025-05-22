@@ -1,13 +1,14 @@
 import logging
-import json
-import re
-from datetime import datetime
-import pytz
 import requests
 from bs4 import BeautifulSoup
+from datetime import datetime
+import json
+import re
 from sqlalchemy import text
-from service.db_session import SessionLocal, KST
 
+from service.db_session import KST, KadanSessionLocal
+
+# 로깅 설정
 logger = logging.getLogger(__name__)
 
 # 패치노트 URL 설정
@@ -102,27 +103,26 @@ def crawl_update_detail(note_id: str):
 
 def fetch_existing_titles():
     """
-    DB에서 기존 패치노트 제목 목록을 가져옵니다.
+    데이터베이스에서 기존 패치노트 제목을 가져옵니다.
     
     Returns:
-        list: 기존 패치노트 제목 목록
+        set: 기존 패치노트 제목 집합
     """
-    session = SessionLocal()
     try:
-        query = "SELECT title FROM patch_note_data"
-        result = session.execute(text(query)).fetchall()
-        titles = [row[0] for row in result if row[0]]
-        logger.info(f"기존 패치노트 {len(titles)}개 조회 완료")
+        session = KadanSessionLocal()
+        result = session.execute(text("SELECT title FROM patch_note_data"))
+        titles = {row[0] for row in result}
+        logger.info(f"기존 패치노트 {len(titles)}개 제목 가져오기 성공")
         return titles
     except Exception as e:
         logger.error(f"기존 패치노트 제목 조회 중 오류: {e}")
-        return []
+        return set()
     finally:
         session.close()
 
 def save_patch_data(data):
     """
-    패치노트 데이터를 DB에 저장합니다.
+    패치노트 데이터를 데이터베이스에 저장합니다.
     
     Args:
         data (dict): 저장할 패치노트 데이터
@@ -130,33 +130,28 @@ def save_patch_data(data):
     Returns:
         bool: 저장 성공 여부
     """
-    session = SessionLocal()
+    session = KadanSessionLocal()
     try:
-        # JSON 데이터 준비
-        contents_json = {
-            "url": data.get("url", ""),
-            "content_html": data.get("content_html", ""),
-            "attachments": data.get("attachments", []),
-            "videos": data.get("videos", []),
-            "scraped_at": data.get("scraped_at", "")
-        }
+        # 현재 시간(KST) 설정
+        current_time = datetime.now(KST)
         
-        # SQL 쿼리 생성
+        # 데이터 저장
         query = """
-            INSERT INTO patch_note_data (title, post_date, contents_json, id)
-            VALUES (:title, :post_date, :contents_json, :id)
+            INSERT INTO patch_note_data (title, post_date, contents_json, id, retrieved_at)
+            VALUES (:title, :post_date, :contents_json, :id, :retrieved_at)
         """
         
-        # 쿼리 실행
-        session.execute(text(query), {
-            "title": data.get("title", ""),
-            "post_date": data.get("post_date", ""),
-            "contents_json": json.dumps(contents_json),
-            "id": data.get("id", "")
-        })
+        params = {
+            "title": data["title"],
+            "post_date": data["post_date"],
+            "contents_json": json.dumps(data["contents"]),
+            "id": data["id"],
+            "retrieved_at": current_time
+        }
         
+        session.execute(text(query), params)
         session.commit()
-        logger.info(f"패치노트 저장 성공: {data.get('title', '')}")
+        logger.info(f"패치노트 저장 성공: {data['title']}")
         return True
     except Exception as e:
         session.rollback()

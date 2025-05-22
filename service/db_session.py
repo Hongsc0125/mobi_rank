@@ -28,8 +28,9 @@ class KSTDateTime(types.TypeDecorator):
 
 # 데이터베이스 연결 문자열
 SQLALCHEMY_DATABASE_URL = "postgresql://super:Wkwkd119%21%21@207.180.212.248:5444/rank_data"
+KADAN_DATABASE_URL = "postgresql://super:Wkwkd119%21%21@207.180.212.248:5444/kadan"
 
-# 데이터베이스 엔진 생성
+# rank_data 데이터베이스 엔진 생성
 engine = create_engine(
     SQLALCHEMY_DATABASE_URL,
     pool_pre_ping=True,  # 연결 유효성 검사
@@ -38,11 +39,27 @@ engine = create_engine(
     max_overflow=2  # 최대 초과 연결 수
 )
 
-# 세션 팩토리 생성
+# kadan 데이터베이스 엔진 생성
+kadan_engine = create_engine(
+    KADAN_DATABASE_URL,
+    pool_pre_ping=True,
+    echo=False,
+    pool_size=5,
+    max_overflow=2
+)
+
+# rank_data 세션 팩토리 생성
 SessionLocal = sessionmaker(
     autocommit=False, 
     autoflush=False, 
     bind=engine
+)
+
+# kadan 세션 팩토리 생성
+KadanSessionLocal = sessionmaker(
+    autocommit=False,
+    autoflush=False,
+    bind=kadan_engine
 )
 
 # 스레드 로컬 세션 (스레드 안전)
