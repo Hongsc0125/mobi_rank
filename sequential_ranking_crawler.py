@@ -1,8 +1,3 @@
-"""
-순차적 랭킹 크롤러 - 각 서버별로 마지막 랭킹부터 1등까지 순차적으로 크롤링하는 독립 실행 모듈
-다른 태스크와 독립적으로 동작하며, 최대한 많은 쓰레드로 빠르게 작업합니다.
-"""
-
 import chromedriver_autoinstaller
 import os
 import logging
@@ -441,7 +436,6 @@ def shutdown_all():
     logger.info("종료 완료")
 
 def get_driver(high_performance=True):
-    """성능 최적화된 크롬 드라이버 인스턴스 생성"""
     chromedriver_autoinstaller.install()
     opts = Options()
     opts.add_argument("--headless=new")
@@ -566,10 +560,10 @@ def fetch_rank_page(driver, server_num, search_name="", div=1, high_performance_
                         logger.error(f"문제가 있는 드라이버 종료 오류: {dq_err}")
                 logger.info(f"서버 {server_name}용 드라이버 재생성 (시도 {attempts + 1}).")
                 driver = get_driver(high_performance=high_performance_driver)
-                time.sleep(5) # 새 드라이버 안정화 및 IP 변경 등 외부 요인 대기
+                time.sleep(5) 
             else:
                 logger.error(f"캐릭터 검색 실패: 서버 {server_name}, 검색어 '{search_name}'에 대한 모든 {MAX_FETCH_RETRIES}번의 재시도 실패. 마지막 오류: {last_exception}")
-                return None, driver # 모든 시도 실패 시 None 반환
+                return None, driver
 
 def parse_rank_range(html: str):
     soup = BeautifulSoup(html, 'html.parser')
@@ -607,7 +601,6 @@ def parse_rank_html(html: str):
             char_class = li.select("div dl")[3].select_one("dd").text.strip()
             power = li.select("div dl")[4].select_one("dd").text.strip()
 
-            # "알수없음"을 캐릭터 이름으로 가진 항목 건너뛰기
             if character == "알수없음":
                 continue
 
@@ -621,7 +614,6 @@ def parse_rank_html(html: str):
                 "power": power
             })
         except (AttributeError, IndexError) as e:
-            # 잘못된 형식의 항목 건너뛰기
             continue
     
     return result
@@ -1768,10 +1760,8 @@ def sequential_rank_crawl_worker(server_num, div=1):
 def start_sequential_rank_crawling():
     """모든 서버에 대해 순차적 랭킹 크롤링 시작"""
     try:
-        # DB 워커 준비 시그널 확인 (중요: 순서 보장)
         if not db_workers_ready.is_set():
             logger.warning("DB 워커가 아직 준비되지 않았습니다. 대기 중...")
-            # 워커 준비 완료 시그널을 기다림 (최대 30초)
             ready = db_workers_ready.wait(timeout=30)
             if not ready:
                 logger.warning("DB 워커 준비 완료 시그널을 받지 못했지만, 강제로 시작합니다.")
@@ -1790,18 +1780,16 @@ def start_sequential_rank_crawling():
         
         # 시스템 사양 정보 로깅
         cpu_count = psutil.cpu_count()
-        memory_gb = psutil.virtual_memory().total / (1024**3)  # GB 단위로 변환
+        memory_gb = psutil.virtual_memory().total / (1024**3)
         logger.info(f"서버당 스레드 수: {threads_per_server} (단일 스레드 사용) (CPU: {cpu_count}코어, 메모리: {memory_gb:.1f}GB)")
         
-        # 서버 번호 리스트
         server_nums = list(range(1, 8))  # 1부터 7까지의 서버
         
-        # 각 서버별로 순차 크롤링 워커 시작
         for server_num in server_nums:
             for i in range(threads_per_server):
                 thread = threading.Thread(
                     target=sequential_rank_crawl_worker,
-                    args=(server_num, 1),  # div=1 (전체랭킹)
+                    args=(server_num, 1),
                     name=f"순차크롤러_{server_num}_{i}"
                 )
                 thread.daemon = True  # 데몬 쓰레드로 설정
@@ -1981,11 +1969,8 @@ if __name__ == "__main__":
             logger.info(f"DB 작업자 쓰레드 #{i} 시작됨")
         logger.info(f"총 {DB_WORKER_COUNT}개의 DB 쓰레드가 병렬로 동작 중")
         
-        # DB 워커 준비 완료 시그널 대기 (중요: 순서 보장)
         logger.info("워커 쓰레드들이 준비되기를 기다리는 중...")
         
-        # 워커 준비 완료 시그널을 기다림 (30초 타임아웃)
-        # 카운트다운 래치 방식으로 DB 워커들이 스스로 준비 완료시 시그널을 보냄
         ready_success = db_workers_ready.wait(timeout=30)
         
         if ready_success:
@@ -2008,7 +1993,7 @@ if __name__ == "__main__":
             # 상황판 업데이트 확인
             current_time = datetime.now(KST)
             if (current_time - last_dashboard_check).total_seconds() >= dashboard_check_interval:
-                display_stats_dashboard()  # 상황판 표시 함수 호출
+                display_stats_dashboard()
                 last_dashboard_check = current_time
                 
             time.sleep(1)
