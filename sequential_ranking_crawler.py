@@ -878,13 +878,16 @@ def db_worker(worker_id):
                         )
                         
                         # 임시 테이블에서 UPSERT 수행 (기존 항목 업데이트, 새 항목 삽입)
+                        # DISTINCT ON을 사용하여 중복 레코드 제거 (character_name, server_name, div가 동일한 경우)
                         cur.execute(f"""
                             INSERT INTO mabinogi_ranking 
                             (rank_position, change_amount, change_type, server_name, 
                              character_name, class_name, power_value, div, retrieved_at)
-                            SELECT rank_position, change_amount, change_type, server_name,
+                            SELECT DISTINCT ON (character_name, server_name, div)
+                                   rank_position, change_amount, change_type, server_name,
                                    character_name, class_name, power_value, div, retrieved_at
                             FROM {tmp_table_name}
+                            ORDER BY character_name, server_name, div, retrieved_at DESC
                             ON CONFLICT (character_name, server_name, div) 
                             DO UPDATE SET 
                                 rank_position = EXCLUDED.rank_position,
