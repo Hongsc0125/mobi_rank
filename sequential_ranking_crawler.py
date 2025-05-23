@@ -14,6 +14,25 @@ from queue import Empty
 from threading import Lock
 from typing import Dict, List, Optional, Tuple, Union
 
+# 로깅 설정 - 대시보드만 표시하도록 INFO 레벨로 설정하고 다른 로그는 제외
+# 기본 로깅 설정
+for handler in logging.root.handlers:
+    logging.root.removeHandler(handler)
+    
+# 콘솔 핸들러 설정
+ch = logging.StreamHandler()
+ch.setLevel(logging.INFO)
+ch.setFormatter(logging.Formatter('%(asctime)s [%(levelname)s] %(message)s', datefmt='%Y-%m-%d %H:%M:%S'))
+
+# 루트 로거 설정
+logging.root.setLevel(logging.INFO)
+logging.root.addHandler(ch)
+
+# 다른 모듈의 로깅 레벨 설정 (불필요한 로그 제거)
+logging.getLogger('urllib3').setLevel(logging.WARNING)
+logging.getLogger('selenium').setLevel(logging.WARNING)
+logging.getLogger('chardet').setLevel(logging.WARNING)
+
 # PostgreSQL 직접 접근용 라이브러리 (COPY 명령어 사용 시 필요)
 import psycopg2
 from psycopg2.extensions import connection as pg_connection
@@ -45,6 +64,8 @@ from sqlalchemy import text
 # 로거 설정
 logger = logging.getLogger("순차크롤러")
 logger.setLevel(logging.INFO)
+# 중복 로그 방지를 위한 propagate 설정 추가
+logger.propagate = False
 
 # 콘솔 핸들러 설정
 console_handler = logging.StreamHandler()
@@ -58,6 +79,10 @@ file_handler.setLevel(logging.INFO)
 file_formatter = logging.Formatter('%(asctime)s [%(levelname)s] %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
 file_handler.setFormatter(file_formatter)
 
+# 기존 핸들러 제거 (중복 방지)
+if logger.handlers:
+    logger.handlers.clear()
+
 # 핸들러 추가
 logger.addHandler(console_handler)
 logger.addHandler(file_handler)
@@ -65,8 +90,7 @@ logger.addHandler(file_handler)
 # 로그 시작 메시지
 logger.info("로거가 초기화되었습니다.")
 
-# 로그 레벨 정리: root 로거 대신 순차크롤러 네임스페이스만 조정
-# 다른 라이브러리(Selenium 등)의 로그는 그대로 유지
+# 다른 라이브러리(Selenium 등)의 로그 레벨 조정
 
 # Selenium 로그 레벨은 WARNING으로 설정 (너무 많은 로그 방지)
 logging.getLogger('selenium').setLevel(logging.WARNING)
@@ -161,6 +185,9 @@ processed_characters_lock = threading.Lock()  # 캐릭터 세트 락
 db_queue = queue.Queue(maxsize=200000)  # 최대 20만 항목으로 제한 (용량 두 배 확장)
 db_worker_running = threading.Event()   # DB 작업자 쓰레드 상태
 db_worker_running.set()                 # 초기에는 작동 상태로 설정
+
+# 전체 시스템 종료 시그널
+shutdown_event = threading.Event()      # 종료 이벤트 (False로 초기화)
 
 # DB 작업자 쓰레드 수 (CPU 코어 수 및 데드락 방지를 고려하여 최적화)
 DB_WORKER_COUNT = max(2, min(6, psutil.cpu_count() // 2))  # CPU 코어 수의 절반으로 제한하고 최소 2개, 최대 6개로 설정
@@ -329,13 +356,15 @@ def display_stats_dashboard():
         # DB 저장 현황
         db_summary = f"DB저장: 총 {db_stats['total_processed']}개 처리, 큐사이즈: {db_stats['current_queue_size']}, 속도: {db_stats['processing_rate']:.1f}개/초"
         
-        # 종합 요약
+        # 종합 요약 - 오직 이 로그만 INFO 레벨로 표시
+        print("\n") # 좋은 가시성을 위한 개행 추가
         logger.info(f"===== 크롤링 상황판 ({time_str}, 총실행시간: {elapsed_str}) =====")
         logger.info(f"[1] 총계: 수집된 항목 {total_collected}개, 콜렉터 배치 총크기: {total_collector_size}개")
         logger.info(f"[2] {server_summary}")
         logger.info(f"[3] 서버별 랭킹 정보: {rank_info_summary}")
         logger.info(f"[4] {db_summary}")
         logger.info("=================================================")
+        print("\n") # 좋은 가시성을 위한 개행 추가
         
         # 상황판 표시 시간 갱신
         last_stats_display = current_time
@@ -390,6 +419,8 @@ SERVER_NAMES = {
 def signal_handler(sig, frame):
     """Ctrl+C 또는 kill 명령어 감지 시 안전하게 종료"""
     logger.info("종료 신호를 감지했습니다. 모든 쓰레드를 안전하게 종료합니다...")
+    # 종료 이벤트 설정
+    global shutdown_event
     shutdown_event.set()
 
 # 시그널 핸들러 등록
@@ -529,6 +560,9 @@ def fetch_rank_page(driver, server_num, search_name="", div=1, high_performance_
                 random_ua = driver.execute_script("return navigator.userAgent;")
                 logger.warning(f"UserAgent 랜덤화 실패, 기본 UA 사용: {ua_error}")
                 
+            # [디버깅] API 호출 정보 출력
+            logger.info(f"[디버깅] API 호출 시작: 서버 {server_name}, 검색어 '{search_name}'")
+                
             headers = {
                 "User-Agent":          random_ua,  # 랜덤 UserAgent 사용
                 "Accept":              "*/*",
@@ -544,12 +578,19 @@ def fetch_rank_page(driver, server_num, search_name="", div=1, high_performance_
                 "search":  search_name,
             }
 
+            # API 호출 시도
+            logger.debug(f"API 호출 시도: 서버 {server_name}, 검색어 '{search_name}'")
+            
             resp = sess.post(api_url, headers=headers, data=data)
             resp.raise_for_status()
+            
+            # API 응답 성공
+            logger.info(f"API 응답 성공: 서버 {server_name}, 검색어 '{search_name}'")
+            
             return resp.text, driver
 
         except (requests.exceptions.RequestException, WebDriverException) as e:
-            logger.warning(f"캐릭터 검색 실패: 서버 {server_name}, 검색어 '{search_name}', 시도 {attempts + 1}/{MAX_FETCH_RETRIES}. 오류: {e}")
+            logger.debug(f"캐릭터 검색 실패: 서버 {server_name}, 검색어 '{search_name}', 시도 {attempts + 1}/{MAX_FETCH_RETRIES}. 오류: {e}")
             last_exception = e
             attempts += 1
             if attempts < MAX_FETCH_RETRIES:
@@ -562,7 +603,7 @@ def fetch_rank_page(driver, server_num, search_name="", div=1, high_performance_
                 driver = get_driver(high_performance=high_performance_driver)
                 time.sleep(5) 
             else:
-                logger.error(f"캐릭터 검색 실패: 서버 {server_name}, 검색어 '{search_name}'에 대한 모든 {MAX_FETCH_RETRIES}번의 재시도 실패. 마지막 오류: {last_exception}")
+                logger.debug(f"캐릭터 검색 실패: 서버 {server_name}, 검색어 '{search_name}'에 대한 모든 {MAX_FETCH_RETRIES}번의 재시도 실패. 마지막 오류: {last_exception}")
                 return None, driver
 
 def parse_rank_range(html: str):
@@ -1236,7 +1277,7 @@ class DataCollector:
                         gc.collect()
                     
                     # 로그에 저장 결과 출력
-                    logger.info(f"서버 {self.server_name}의 데이터 {batch_size}개 항목을 DB 큐에 전송 완료")
+                    logger.debug(f"서버 {self.server_name}의 데이터 {batch_size}개 항목을 DB 큐에 전송 완료")
                         
                 except Exception as e:
                     logger.error(f"배치 데이터 큐 전송 중 오류: {e}")
@@ -1253,7 +1294,7 @@ def get_character_list_for_server(server_name, div=1):
         # DB에서 캐릭터 목록을 새로 가져올 때 처리된 캐릭터 세트 초기화
         with processed_characters_lock:
             processed_characters.clear()
-            logger.info(f"서버 {server_name} 캐릭터 목록 새로 조회, 처리된 캐릭터 세트 초기화")
+            logger.debug(f"서버 {server_name} 캐릭터 목록 새로 조회, 처리된 캐릭터 세트 초기화")
             
         db = SessionLocal()
         try:
@@ -1272,6 +1313,11 @@ def get_character_list_for_server(server_name, div=1):
             
             result = db.execute(query, {"server_name": server_name, "div": div})
             characters = [row[0] for row in result.fetchall()]
+            
+            # 데이터베이스에서 가져온 캐릭터 정보 출력 (SQL 쿼리 결과)
+            logger.debug(f"서버 {server_name}, div {div} - DB에서 가져온 캐릭터 수: {len(characters)}")
+            if len(characters) > 0:
+                logger.debug(f"서버 {server_name} 처음 5개 캐릭터: {characters[:5]}")
             
             if not characters:
                 logger.warning(f"서버 {server_name}에서 크롤링할 캐릭터를 찾을 수 없음. 기본 캐릭터 사용.")
@@ -1370,7 +1416,8 @@ def is_safe_to_resume(server_name, collector_size):
         return False
 
 def sequential_rank_crawl_worker(server_num, div=1):
-    """마지막 랭킹부터 1등까지 순차적으로 크롤링하는 워커 함수
+    """
+    마지막 랭킹부터 1등까지 순차적으로 크롤링하는 워커 함수
     캠릭터 이름 기반 검색 방식
     
     Args:
@@ -1381,9 +1428,16 @@ def sequential_rank_crawl_worker(server_num, div=1):
     thread_name = f"순차크롤러_{server_name}"
     update_thread_status(thread_name, "시작됨")
     
+    # 실행 시간 정보 추가
+    worker_start_time = time.time()
+    last_activity_time = time.time()
+    # 일정 시간(2시간) 동안 활동이 없을 경우 재시작
+    max_inactivity_time = 2 * 60 * 60
+    # 최대 실행 시간 (12시간)
+    max_runtime = 12 * 60 * 60
+    
     # 드라이버 준비
-    driver = None
-    driver_restart_count = 0  # 드라이버 재시작 횟수 추적
+    driver = get_driver(high_performance=True)
     MAX_DRIVER_RESTARTS = 5   # 최대 드라이버 재시작 횟수
     
     # 크롤링 일시 중단 상태 관리
@@ -1419,6 +1473,31 @@ def sequential_rank_crawl_worker(server_num, div=1):
                 collector_size = 0
                 with collector.lock:
                     collector_size = len(collector.batch)
+                
+                # 실행 시간 검사 - 최대 실행 시간 초과 시 중단
+                current_runtime = time.time() - worker_start_time
+                if current_runtime > max_runtime:
+                    logger.warning(f"[타임아웃] 서버 {server_name} 크롤링 시간 초과: {current_runtime/3600:.1f}시간 > {max_runtime/3600:.1f}시간")
+                    break
+                
+                # 비활성 시간 검사 - 오랫동안 활동이 없으면 재시작
+                inactive_time = time.time() - last_activity_time
+                if inactive_time > max_inactivity_time:
+                    logger.warning(f"[활동없음] 서버 {server_name} 크롤러 {inactive_time/60:.1f}분 동안 활동 없음")
+                    # 드라이버 재시작
+                    try:
+                        if driver is not None:
+                            driver.quit()
+                    except Exception as e:
+                        logger.error(f"[드라이버종료오류] 서버 {server_name}: {e}")
+                        
+                    # 드라이버 재생성
+                    logger.info(f"[드라이버재시작] 서버 {server_name}")
+                    driver = get_driver(high_performance=True)
+                    time.sleep(10)  # 재시작 후 잠시 대기
+                    
+                    # 활동 시간 초기화
+                    last_activity_time = time.time()
                 
                 # 상태 확인 주기에 따라 DB 큐 및 콜렉터 크기 모니터링
                 current_time = datetime.now(KST)
@@ -1511,67 +1590,98 @@ def sequential_rank_crawl_worker(server_num, div=1):
                 current_char_idx = 0
                 total_chars = len(chars)
                 
-                # 디버깅: 총 캐릭터 수 기록
-                # logger.info(f"서버 {server_name}의 총 캐릭터 수: {total_chars}개")
                 
                 with last_crawled_character_lock:
-                    if server_name not in last_crawled_character_index:
-                        current_char_idx = 0  # 처음부터 시작 (이미 랭킹 내림차순으로 정렬되어 있음)
-                    else:
-                        current_char_idx = (last_crawled_character_index[server_name] + 1) % total_chars  # 다음 캐릭터로
+                    # 이전 인덱스 저장
+                    prev_idx = last_crawled_character_index.get(server_name, -1)
+                    current_char_idx = (prev_idx + 1) % total_chars  # 다음 캐릭터로
+                    
                     
                     # 현재 캐릭터 인덱스 저장
                     last_crawled_character_index[server_name] = current_char_idx
                     
-                    # 1번 랭킹까지 크롤링 후 다시 처음으로 돌아가는 경우
-                    if current_char_idx == 0 and server_name in last_crawled_character_index:
+                    # "진짜 한 바퀴 다 돌았을 때"만 실행 - 이전 인덱스가 마지막이었고 현재 인덱스가 0인 경우
+                    is_full_cycle = prev_idx == total_chars - 1 and current_char_idx == 0
+                    # 순환 완료 여부 확인
+                    
+                    if is_full_cycle:
                         # 새로운 순환 시작 - 처리된 캐릭터 세트 초기화
                         with processed_characters_lock:
+                            # 전체 처리된 캐릭터 세트 초기화
                             processed_characters.clear()
-                            logger.info(f"서버 {server_name} 전체 순환 완료, 처리된 캐릭터 세트 초기화")
+                            logger.debug(f"서버 {server_name} 전체 순환 완료, 처리된 캐릭터 세트 초기화")
                         
                         # 순환 완료 시 남은 데이터 저장
                         if collector.batch:
-                            logger.info(f"서버 {server_name} 순환 완료, 남은 데이터 {len(collector.batch)}개 저장")
+                            logger.debug(f"서버 {server_name} 순환 완료, 남은 데이터 {len(collector.batch)}개 저장")
                             collector.flush()
+                            
+                        # 다음 순환을 위해 캐릭터 목록 새로 가져오기
+                        with server_characters_lock:
+                            logger.debug(f"서버 {server_name} 다음 순환을 위한 캐릭터 목록 새로 가져오기")
+                            server_characters[server_name] = get_character_list_for_server(server_name, div)
+                            # 현재 처리할 캐릭터 인덱스 초기화 (0부터 다시 시작)
+                            last_crawled_character_index[server_name] = 0
+                            
+                        # 잠시 대기 후 다음 순환 시작 (KST 타임존 유지)
+                        logger.debug(f"서버 {server_name} 다음 순환 시작까지 5초 대기")
+                        time.sleep(5)
                 
                 # 현재 처리할 캐릭터 이름 가져오기
                 current_char = chars[current_char_idx]
+                # 현재 처리할 캐릭터 정보는 상황판에 표시됨
                 
                 # 이미 처리된 캐릭터인지 확인
                 character_key = f"{server_name}_{current_char}_{div}"
                 with processed_characters_lock:
-                    if character_key in processed_characters:
-                        # 이미 처리된 캐릭터는 스킵하고 통계에 반영
-                        logger.debug(f"서버 {server_name}, 캐릭터 '{current_char}' 이미 처리됨, 크롤링 스킵")
-                        
-                        # 통계에 이미 처리된 캐릭터를 반영
-                        with stats_lock:
-                            if server_name in server_stats:
-                                # 이미 처리된 캐릭터는 수집도 했고 저장도 완료된 상태
-                                server_stats[server_name]['total_collected'] += 1
-                                server_stats[server_name]['total_flushed'] += 1
-                                
-                                # 콜렉터 사이즈는 유지 - 이미 처리된 것은 현재 배치에 포함되지 않음
-                                update_collector_size(server_name, server_stats[server_name]['collector_size'])
-                        
-                        # 주기적으로 데이터 저장 - 마지막 저장 후 일정 시간 경과 시
-                        current_time = datetime.now(KST)
-                        if (current_time - collector.last_flush_time) > collector.max_save_interval and collector.batch:
-                            logger.info(f"시간 기반 자동 저장 수행: 마지막 저장 후 {(current_time - collector.last_flush_time).total_seconds():.0f}초 경과")
-                            collector.flush()
-                        
-                        continue
+                    already_processed = character_key in processed_characters
+                    
+                    # processed_characters 세트 크기 확인
+                    
+                if already_processed:
+                    # 이미 처리된 캐릭터는 스킵하고 통계에 반영
+                    # 이미 처리된 캐릭터는 크롤링 스킵
+                    
+                    # 통계에 이미 처리된 캐릭터를 반영
+                    with stats_lock:
+                        if server_name in server_stats:
+                            # 이미 처리된 캐릭터는 수집도 했고 저장도 완료된 상태
+                            server_stats[server_name]['total_collected'] += 1
+                            server_stats[server_name]['total_flushed'] += 1
+                            
+                            # 콜렉터 사이즈는 유지 - 이미 처리된 것은 현재 배치에 포함되지 않음
+                            update_collector_size(server_name, server_stats[server_name]['collector_size'])
+                    
+                    # 주기적으로 데이터 저장 - 마지막 저장 후 일정 시간 경과 시
+                    current_time = datetime.now(KST)
+                    if (current_time - collector.last_flush_time) > collector.max_save_interval and collector.batch:
+                        logger.debug(f"시간 기반 자동 저장 수행: 마지막 저장 후 {(current_time - collector.last_flush_time).total_seconds():.0f}초 경과")
+                        collector.flush()
+                    
+                    # 활동 시간 갱신
+                    last_activity_time = time.time()
+                    
+                    # 다음 캐릭터로 인덱스 증가 처리 - 중요: 이미 처리된 경우에도 다음 캐릭터로 넘어가야 함
+                    with last_crawled_character_lock:
+                        current_char_idx = (current_char_idx + 1) % total_chars
+                        last_crawled_character_index[server_name] = current_char_idx
+                        # 다음 캐릭터 인덱스로 이동
+                    
+                    # 다음 반복으로 즐시 이동
+                    continue
                 
-                update_thread_status(thread_name, f"캐릭터 크롤링 중", f"서버 {server_name}, 캐릭터 {current_char} ({current_char_idx+1}/{total_chars})")
+                # 변수 미리 초기화
+                rank_range = None
+                
+                # 랜킹 정보를 포함하여 스레드 상태 업데이트
+                rank_info_display = f"{current_char_idx+1}/{total_chars}"
+                update_thread_status(thread_name, f"캐릭터 크롤링 중", f"서버 {server_name}, 캐릭터 {current_char} - [{rank_info_display}]")
                 
                 # 현재 처리 중인 캐릭터와 서버의 랭킹 구간 정보 갱신
                 # 랭킹 구간은 현재 랭킹이 없을 경우 단순 캐릭터 인덱스로 표시
-                rank_info = f"{current_char_idx+1}/{total_chars}"
-                update_server_rank_info(server_name, rank_info, current_char)
-                
-                # 디버깅: 크롤링 시작 로그 추가
-                # logger.info(f"서버 {server_name}, 캐릭터 '{current_char}' 크롤링 시작 (인덱스: {current_char_idx+1}/{total_chars})")
+                if not rank_range:  # rank_range가 없는 경우에만 업데이트
+                    rank_info = f"{current_char_idx+1}/{total_chars}"
+                    update_server_rank_info(server_name, rank_info, current_char)
                 
                 # 캐릭터 이름으로 검색하여 데이터 가져오기
                 # API 호출에는 server_num을 사용
@@ -1580,23 +1690,45 @@ def sequential_rank_crawl_worker(server_num, div=1):
                     logger.error(f"서버 {server_name}, 캐릭터 '{current_char}' 검색 실패. 다음으로 넘어감.")
                     # 잠시 대기 후 다시 시도
                     time.sleep(5)
+                    # 실패하더라도 활동은 했으므로 활동 시간 갱신
+                    last_activity_time = time.time()
                     continue
                 
-                # 랭킹 범위 가져오기
+                # 랜킹 범위 가져오기
                 rank_range = parse_rank_range(html)
+                # 활동 시간 갱신
+                last_activity_time = time.time()
                 if rank_range:
                     # 랭킹 범위 정보 갱신
                     update_server_rank_info(server_name, rank_range, current_char)
+                    # 스레드 상태 업데이트 (랭킹 정보 포함)
+                    update_thread_status(thread_name, f"캐릭터 크롤링 중", f"서버 {server_name}, 캐릭터 {current_char} - [{rank_range}]")
+                    # 랜킹 정보 로그 추가 - 로그에 현재 크롤링 중인 캐릭터의 랭킹 정보 추가
+                    logger.debug(f"[랜킹정보] 서버 {server_name}, 캐릭터 '{current_char}' - {rank_range}")
                 
-                # 랭킹 데이터 파싱
-                parsed_data = parse_rank_html(html)
+                try:
+                    # 랜킹 데이터 파싱
+                    parsed_data = parse_rank_html(html)
+                    # 파싱 성공 시 활동 시간 갱신
+                    last_activity_time = time.time()
+                    
+                    # 파싱된 데이터의 첫 번째 캐릭터 정보 로그
+                    if parsed_data and len(parsed_data) > 0:
+                        first_char = parsed_data[0]['character']
+                        first_rank = parsed_data[0]['rank']
+                        logger.info(f"[데이터확인] 서버 {server_name}, 캐릭터 '{current_char}' 검색 결과 - 첫 번째 캐릭터: '{first_char}' ({first_rank})")
+                except Exception as parse_error:
+                    logger.error(f"[심각] 서버 {server_name}, 캐릭터 '{current_char}' 데이터 파싱 중 오류 발생: {parse_error}")
+                    # 오류 발생 시 로그를 남기고 계속 진행
+                    parsed_data = []
+                    time.sleep(3)  # 오류 발생 시 잠시 대기
                 
                 if not parsed_data:
                     logger.warning(f"서버 {server_name}, 캐릭터 '{current_char}'에서 데이터를 찾을 수 없음")
                     
                     # 찾을 수 없는 캐릭터는 DB에서 삭제
                     try:
-                        # 캐릭터가 존재하지 않으므로 해당 캐릭터의 모든 랭킹 데이터(div) 삭제
+                        # 캐릭터가 존재하지 않으므로 해당 캐릭터의 모든 랜킹 데이터(div) 삭제
                         deleted_count = delete_character_data(server_name, current_char, div=None)
                         
                         if deleted_count > 0:
@@ -1621,19 +1753,21 @@ def sequential_rank_crawl_worker(server_num, div=1):
                                 collector.total_items_collected -= 1  # 통계용 1 감소
                             
                     except Exception as e:
-                        logger.error(f"서버 {server_name}, 캠릭터 '{current_char}' 삭제 중 오류 발생: {e}")
+                        logger.error(f"서버 {server_name}, 캐릭터 '{current_char}' 삭제 중 오류 발생: {e}")
                 else:
                     # 데이터 수집 (통계 갱신은 collector에서 처리, KST 시간 적용)
                     collector.add_data(parsed_data)
+                    # 데이터 추가 성공 시 활동 시간 갱신
+                    last_activity_time = time.time()
                     
                     # 처리된 캐릭터 등록 (parsed_data에 있는 모든 캐릭터)
                     with processed_characters_lock:
-                        for item in parsed_data:
-                            char_key = f"{item['server']}_{item['character']}_{div}"
-                            processed_characters.add(char_key)
-                            
-                        # 현재 캐릭터도 추가 (여러 서버 대응)
+                        # 오직 현재 처리중인 캐릭터만 추가
                         processed_characters.add(character_key)
+                        
+                        # 현재 처리중인 캐릭터만 추가
+                        # 로그 기록 성공 시 활동 시간 갱신
+                        last_activity_time = time.time()
                 
                 # 일정 간격으로 수집기 비우기 (중복 제거 및 간격 조정)
                 if current_char_idx % 5 == 0:  # 5회마다 플러시 (더 자주 저장)
@@ -1641,13 +1775,26 @@ def sequential_rank_crawl_worker(server_num, div=1):
                     if collector.batch:
                         logger.info(f"주기적 저장 실행: 캐릭터 인덱스 {current_char_idx}, 배치 크기 {len(collector.batch)}개")
                         collector.flush()
-                    # 상황판 갱신
-                    display_stats_dashboard()
+                        # 저장 성공 시 활동 시간 갱신
+                        last_activity_time = time.time()
+                        
+                        # 저장 후 상황판 표시 업데이트
+                        display_stats_dashboard()
+                
+                # 처리된 캐릭터 세트 크기 로깅
+                with processed_characters_lock:
+                    # 현재 서버에 해당하는 처리된 캐릭터 개수 확인
+                    server_processed = sum(1 for key in processed_characters if key.startswith(f"{server_name}_"))
+                    logger.debug(f"서버 {server_name} - processed_characters 세트 크기: {len(processed_characters)}, 서버 관련 캐릭터: {server_processed}개")
+                # 상황판 갱신
+                display_stats_dashboard()
                 
                 # 시간 기반 주기적 체크 - 데이터가 없어도 주기적으로 시간 체크
                 current_time = datetime.now(KST)
+                # 시간 체크도 활동으로 간주
+                last_activity_time = time.time()
                 if (current_time - collector.last_flush_time) > collector.max_save_interval and collector.batch:
-                    logger.info(f"시간 기반 자동 저장 실행: 마지막 저장 후 {(current_time - collector.last_flush_time).total_seconds():.0f}초 경과")
+                    logger.debug(f"시간 기반 자동 저장 실행: 마지막 저장 후 {(current_time - collector.last_flush_time).total_seconds():.0f}초 경과")
                     collector.flush()
                 
                 # 시스템 리소스 사용량 확인 및 과부하 방지
@@ -1989,7 +2136,21 @@ if __name__ == "__main__":
         dashboard_check_interval = 5  # 5초마다 상황판 표시 확인
         
         # 메인 쓰레드는 다른 작업을 할 수 있도록 계속 실행
+        last_activity_time = time.time()
+        worker_start_time = time.time()
+        max_runtime = 3600 * 12  # 12시간
+        
         while not shutdown_event.is_set():
+            # 현재 활동 시간 갱신
+            last_activity_time = time.time()
+            
+            # 실행 시간 검사
+            current_runtime = time.time() - worker_start_time
+            if current_runtime > max_runtime:
+                logger.warning(f"[타임아웃] 크롤링 시간 초과: {current_runtime/3600:.1f}시간 > {max_runtime/3600:.1f}시간")
+                # 최대 실행 시간 초과 시 재시작
+                break
+            
             # 상황판 업데이트 확인
             current_time = datetime.now(KST)
             if (current_time - last_dashboard_check).total_seconds() >= dashboard_check_interval:
