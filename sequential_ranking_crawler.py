@@ -561,7 +561,7 @@ def fetch_rank_page(driver, server_num, search_name="", div=1, high_performance_
                 logger.warning(f"UserAgent 랜덤화 실패, 기본 UA 사용: {ua_error}")
                 
             # [디버깅] API 호출 정보 출력
-            logger.info(f"[디버깅] API 호출 시작: 서버 {server_name}, 검색어 '{search_name}'")
+            # logger.info(f"[디버깅] API 호출 시작: 서버 {server_name}, 검색어 '{search_name}'")
                 
             headers = {
                 "User-Agent":          random_ua,  # 랜덤 UserAgent 사용
@@ -585,7 +585,7 @@ def fetch_rank_page(driver, server_num, search_name="", div=1, high_performance_
             resp.raise_for_status()
             
             # API 응답 성공
-            logger.info(f"API 응답 성공: 서버 {server_name}, 검색어 '{search_name}'")
+            logger.debug(f"API 응답 성공: 서버 {server_name}, 검색어 '{search_name}'")
             
             return resp.text, driver
 
@@ -1324,7 +1324,7 @@ def get_character_list_for_server(server_name, div=1):
                 return ["힝트"]
               # 서버별 크롤링 상태 정보
             logger.info(f"로딩된 서버 이름들: {[server for server in crawling_paused.keys()]}")
-            logger.info(f"서버 {server_name}에서 {len(characters)}개의 캐릭터를 마지막 랭킹부터 크롤링할 예정")
+            logger.info(f"서버 {server_name}에서 {len(characters)}개의 캐릭터를 1등 랭킹부터 크롤링할 예정")
             return characters
         finally:
             db.close()
@@ -1716,7 +1716,7 @@ def sequential_rank_crawl_worker(server_num, div=1):
                     if parsed_data and len(parsed_data) > 0:
                         first_char = parsed_data[0]['character']
                         first_rank = parsed_data[0]['rank']
-                        logger.info(f"[데이터확인] 서버 {server_name}, 캐릭터 '{current_char}' 검색 결과 - 첫 번째 캐릭터: '{first_char}' ({first_rank})")
+                        # logger.info(f"[데이터확인] 서버 {server_name}, 캐릭터 '{current_char}' 검색 결과 - 첫 번째 캐릭터: '{first_char}' ({first_rank})")
                 except Exception as parse_error:
                     logger.error(f"[심각] 서버 {server_name}, 캐릭터 '{current_char}' 데이터 파싱 중 오류 발생: {parse_error}")
                     # 오류 발생 시 로그를 남기고 계속 진행
