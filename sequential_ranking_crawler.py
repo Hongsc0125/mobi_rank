@@ -1242,11 +1242,17 @@ class DataCollector:
                     # 명시적 가비지 컬렉션으로 메모리 최적화
                     if batch_size > 500:
                         gc.collect()
+                    
+                    # 로그에 저장 결과 출력
+                    logger.info(f"서버 {self.server_name}의 데이터 {batch_size}개 항목을 DB 큐에 전송 완료")
                         
                 except Exception as e:
                     logger.error(f"배치 데이터 큐 전송 중 오류: {e}")
                     # 오류 발생 시에도 시간 업데이트 (배치는 그대로 유지)
                     self.last_flush_time = datetime.now(KST)
+            else:
+                # 배치가 비어있을 때도 마지막 저장 시간 갱신
+                self.last_flush_time = datetime.now(KST)
 
 
 def get_character_list_for_server(server_name, div=1):
@@ -1531,6 +1537,11 @@ def sequential_rank_crawl_worker(server_num, div=1):
                         with processed_characters_lock:
                             processed_characters.clear()
                             logger.info(f"서버 {server_name} 전체 순환 완료, 처리된 캐릭터 세트 초기화")
+                        
+                        # 순환 완료 시 남은 데이터 저장
+                        if collector.batch:
+                            logger.info(f"서버 {server_name} 순환 완료, 남은 데이터 {len(collector.batch)}개 저장")
+                            collector.flush()
                 
                 # 현재 처리할 캐릭터 이름 가져오기
                 current_char = chars[current_char_idx]
@@ -1551,6 +1562,12 @@ def sequential_rank_crawl_worker(server_num, div=1):
                                 
                                 # 콜렉터 사이즈는 유지 - 이미 처리된 것은 현재 배치에 포함되지 않음
                                 update_collector_size(server_name, server_stats[server_name]['collector_size'])
+                        
+                        # 주기적으로 데이터 저장 - 마지막 저장 후 일정 시간 경과 시
+                        current_time = datetime.now(KST)
+                        if (current_time - collector.last_flush_time) > collector.max_save_interval and collector.batch:
+                            logger.info(f"시간 기반 자동 저장 수행: 마지막 저장 후 {(current_time - collector.last_flush_time).total_seconds():.0f}초 경과")
+                            collector.flush()
                         
                         continue
                 
@@ -1627,11 +1644,19 @@ def sequential_rank_crawl_worker(server_num, div=1):
                         processed_characters.add(character_key)
                 
                 # 일정 간격으로 수집기 비우기 (중복 제거 및 간격 조정)
-                if current_char_idx % 10 == 0:
+                if current_char_idx % 5 == 0:  # 5회마다 플러시 (더 자주 저장)
                     # 배치 저장
-                    collector.flush()
+                    if collector.batch:
+                        logger.info(f"주기적 저장 실행: 캐릭터 인덱스 {current_char_idx}, 배치 크기 {len(collector.batch)}개")
+                        collector.flush()
                     # 상황판 갱신
                     display_stats_dashboard()
+                
+                # 시간 기반 주기적 체크 - 데이터가 없어도 주기적으로 시간 체크
+                current_time = datetime.now(KST)
+                if (current_time - collector.last_flush_time) > collector.max_save_interval and collector.batch:
+                    logger.info(f"시간 기반 자동 저장 실행: 마지막 저장 후 {(current_time - collector.last_flush_time).total_seconds():.0f}초 경과")
+                    collector.flush()
                 
                 # 시스템 리소스 사용량 확인 및 과부하 방지
                 current_time = datetime.now(KST)
