@@ -1216,36 +1216,55 @@ class DataCollector:
         if self.server_name:
             update_server_stats(self.server_name)
     
+    def filter_duplicate_batch(self, items):
+        """배치 데이터에서 중복 항목 제거"""
+        unique_items = []
+        for item in items:
+            if item not in unique_items:
+                unique_items.append(item)
+        return unique_items
+    
     def add_data(self, data):
-        """데이터 추가, 배치 크기에 도달하면 자동 저장"""
-        flush_needed = False
+        """
+        데이터 추가, 배치 크기에 도달하면 자동 저장
+        
+        Args:
+            data: 추가할 데이터 (단일 아이템 또는 리스트)
+        """
         current_time = datetime.now(KST)
+        flush_needed = False
         time_based_flush = False
-        items_count = len(data)
         
         with self.lock:
-            self.batch.extend(data)
-            self.total_items_collected += items_count
+            # 단일 아이템을 리스트로 변환
+            items = data if isinstance(data, list) else [data]
             
-            # 통계 갱신
-            if self.server_name:
-                update_server_stats(self.server_name, items_collected=items_count)
-                update_collector_size(self.server_name, len(self.batch))
+            # 중복 필터링
+            filtered_items = self.filter_duplicate_batch(items)
             
-            # 배치 크기 기반 저장 조건
+            # 필터링된 아이템 추가
+            if filtered_items:
+                self.batch.extend(filtered_items)
+                self.total_items_collected += len(filtered_items)
+                
+                # 서버 통계 업데이트
+                if self.server_name:
+                    update_server_stats(self.server_name, items_collected=len(filtered_items))
+            
+            # 배치 크기 또는 최대 저장 간격 도달 시 플러시
             if len(self.batch) >= self.batch_size:
                 flush_needed = True
-            # 시간 기반 저장 조건
-            elif (current_time - self.last_flush_time) > self.max_save_interval and self.batch:
+            elif (current_time - self.last_flush_time) >= self.max_save_interval and self.batch:
                 flush_needed = True
                 time_based_flush = True
         
+        # 플러시가 필요한 경우에만 실행
         if flush_needed:
             batch_size = len(self.batch)
             self.flush()
             if time_based_flush:
                 logger.debug(f"시간 기반 자동 저장: {batch_size}개 항목 ({(current_time - self.last_flush_time).total_seconds():.0f}초 경과)")
-                
+        
         # 상황판 업데이트 (지정된 간격마다)
         display_stats_dashboard()
     
