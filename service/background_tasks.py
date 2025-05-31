@@ -236,6 +236,11 @@ def update_population_statistics_task():
             # 현재 시간(KST)
             now = get_current_time()
             
+            # 자정(00:00:00)까지 남은 시간(분) 계산
+            tomorrow = now.date() + timedelta(days=1)
+            midnight = datetime.combine(tomorrow, time())
+            minutes_to_midnight = int((midnight - now).total_seconds() / 60)
+            
             # 현재 시간이 자정이고, 이미 오늘 업데이트를 실행하지 않았다면
             if now.hour == 0 and now.date() != last_update_day:
                 #logger.info("Updating population statistics at midnight")
