@@ -55,19 +55,32 @@ class DOMCrawler:
             options.add_argument('--no-sandbox')
             options.add_argument('--disable-dev-shm-usage')
             options.add_argument('--disable-gpu')
+            options.add_argument('--disable-web-security')
+            options.add_argument('--disable-features=VizDisplayCompositor')
             options.add_argument('--window-size=1920,1080')
             options.add_argument('--disable-blink-features=AutomationControlled')
+            options.add_argument('--disable-extensions')
+            options.add_argument('--disable-plugins')
+            options.add_argument('--disable-images')  # 이미지 로딩 비활성화로 속도 향상
             options.add_experimental_option("excludeSwitches", ["enable-automation"])
             options.add_experimental_option('useAutomationExtension', False)
             
             # User-Agent 설정
             options.add_argument('--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
             
+            # 페이지 로드 전략 설정
+            options.add_argument('--page-load-strategy=eager')
+            
             service = Service()
             self.driver = webdriver.Chrome(service=service, options=options)
+            
+            # 더 긴 타임아웃 설정
+            self.driver.set_page_load_timeout(30)
+            self.driver.implicitly_wait(10)
+            
             self.driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
             
-            self.wait = WebDriverWait(self.driver, 10)
+            self.wait = WebDriverWait(self.driver, 20)  # 대기 시간 증가
             logger.info("Chrome 드라이버가 성공적으로 초기화되었습니다.")
             
         except Exception as e:
@@ -80,11 +93,30 @@ class DOMCrawler:
             ranking_url_with_type = f"{self.ranking_url}?t={rank_type}"
             logger.info(f"랭킹 페이지로 이동: {ranking_url_with_type}")
             
-            self.driver.get(ranking_url_with_type)
-            
-            # 페이지 로딩 대기
-            self.wait.until(EC.presence_of_element_located((By.CLASS_NAME, "ranking_area")))
-            logger.info("랭킹 페이지 로딩 완료")
+            # 더 안정적인 페이지 로딩
+            retry_count = 3
+            for attempt in range(retry_count):
+                try:
+                    self.driver.get(ranking_url_with_type)
+                    
+                    # 페이지 로딩 대기 - 더 간단한 요소부터 찾기
+                    self.wait.until(EC.presence_of_element_located((By.TAG_NAME, "body")))
+                    logger.info(f"페이지 기본 로딩 완료 (시도 {attempt + 1})")
+                    
+                    # 랭킹 관련 요소가 로딩될 때까지 대기
+                    time.sleep(3)  # 추가 대기
+                    
+                    # 랭킹 컨테이너 확인
+                    ranking_elements = self.driver.find_elements(By.CSS_SELECTOR, ".ranking.container, .ranking_list_wrap, body")
+                    if ranking_elements:
+                        logger.info("랭킹 페이지 로딩 완료")
+                        return
+                    
+                except TimeoutException:
+                    logger.warning(f"페이지 로딩 시도 {attempt + 1} 실패")
+                    if attempt == retry_count - 1:
+                        raise
+                    time.sleep(2)
             
         except TimeoutException:
             logger.error("랭킹 페이지 로딩 시간 초과")
