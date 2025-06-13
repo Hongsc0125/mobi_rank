@@ -8,6 +8,7 @@ import pytz
 from sqlalchemy import text
 from service.db_session import SessionLocal, get_current_time, KST
 from service.full_data import fetch_rank_via_requests, parse_rank_html
+from service.db import insert_data
 
 # 로거 설정
 logger = logging.getLogger(__name__)
@@ -73,6 +74,11 @@ def find_server_population(server_name, last_character):
         # 마지막 캐릭터 정보 가져오기
         html_data = fetch_rank_via_requests(server_name, character_name)
         parsed_data = parse_rank_html(html_data)
+        
+        # 가져온 데이터를 DB에 저장 (전투력 랭킹 div=1)
+        if parsed_data:
+            insert_data(parsed_data, server=server_name, div=1)
+            logger.info(f"{server_name} 서버 인구수 확인 중 {len(parsed_data)}개 캐릭터 데이터 DB 저장")
         
         # 파싱된 데이터에서 현재 캐릭터의 랭킹 확인
         current_rank = last_rank
