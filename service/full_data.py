@@ -78,8 +78,32 @@ def fetch_rank_via_dom(server=None, name="", rank_type=1):
         # 랭킹 데이터 로딩 대기
         wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "div[data-mm-rankinglist], ul.list")))
         
+        # 추가 대기 시간 (DOM 업데이트 완료 대기)
+        time.sleep(2)
+        
+        # 디버깅: 검색 결과 확인
+        page_source = driver.page_source
+        if name:
+            # 검색 결과가 있는지 확인
+            from bs4 import BeautifulSoup
+            soup = BeautifulSoup(page_source, 'html.parser')
+            ranking_items = soup.select("ul.list li.item")
+            logging.info(f"캐릭터 '{name}' 검색 결과: {len(ranking_items)}개 아이템 발견")
+            
+            # 검색 결과가 없으면 no_data 확인
+            no_data = soup.select_one("div.no_data")
+            if no_data:
+                logging.info(f"캐릭터 '{name}' 검색 결과 없음 (no_data 메시지 발견)")
+            elif ranking_items:
+                # 첫 번째 아이템의 캐릭터명 확인
+                first_item = ranking_items[0]
+                character_element = first_item.select("div dl")[2].select_one("dd")
+                if character_element:
+                    found_character = character_element.get("data-charactername", "").strip()
+                    logging.info(f"첫 번째 검색 결과 캐릭터: '{found_character}'")
+        
         # 페이지 소스 반환
-        return driver.page_source
+        return page_source
     
     except Exception as e:
         logging.error(f"DOM 랭킹 데이터 요청 중 오류 (타입 {rank_type}): {str(e)}")
