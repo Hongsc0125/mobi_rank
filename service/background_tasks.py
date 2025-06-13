@@ -314,11 +314,11 @@ def start_background_tasks():
     driver_pool = get_driver_pool()  # 3개의 크롬 드라이버를 상시 유지하는 풀 초기화
     print(f"크롬 드라이버 풀 초기화 완료 (최대 3개 드라이버 유지)")
     
-    # 캐릭터 업데이트 스레드 시작
-    update_thread = threading.Thread(target=background_update_task, daemon=True)
-    update_thread.name = "character-update-thread"
-    update_thread.start()
-    #logger.info("Started background character update thread")
+    # 캐릭터 업데이트 스레드 비활성화 (sequential_ranking_crawler가 담당)
+    # update_thread = threading.Thread(target=background_update_task, daemon=True)
+    # update_thread.name = "character-update-thread"
+    # update_thread.start()
+    print("개별 캐릭터 업데이트는 sequential_ranking_crawler가 담당하므로 비활성화됨")
     
     # 인구수 업데이트 스레드 시작 (1개 쓰레드만 배정)
     population_thread = threading.Thread(target=update_population_data, daemon=True)
@@ -344,4 +344,4 @@ def start_background_tasks():
     patch_note_thread.start()
     print("패치노트 크롤링 백그라운드 쓰레드 시작됨")
     
-    return [update_thread, population_thread, stats_thread, patch_note_thread]
+    return [population_thread, class_population_thread, stats_thread, patch_note_thread]
