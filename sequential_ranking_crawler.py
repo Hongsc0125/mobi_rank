@@ -532,6 +532,9 @@ def fetch_rank_page_dom(driver, server_num, search_name="", div=1, high_performa
         if server_name:
             select_server_option(driver, server_name)
             time.sleep(2)
+            # 서버 선택 후 검색 입력창이 로딩될 때까지 대기
+            wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "input[name='search']")))
+            time.sleep(1)  # 추가 안정화 대기
         
         # 캐릭터 검색
         if search_name:
