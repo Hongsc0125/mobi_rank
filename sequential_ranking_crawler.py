@@ -709,7 +709,7 @@ def fast_sequential_crawl_worker(server_num, div=1):
         # 드라이버 풀에서 안정적인 드라이버 가져오기 (server.py와 동일)
         from service.driver_pool import get_driver_pool
         driver_pool = get_driver_pool()
-        driver = driver_pool.get_driver()
+        driver = driver_pool.get_driver(timeout=60)  # 더 긴 대기 시간
         
         # 데이터 수집기 초기화 (큰 배치 크기로 고속 처리)
         collector = DataCollector(batch_size=5000, div=div, server_name=server_name)

@@ -238,5 +238,5 @@ def get_driver_pool():
     """드라이버 풀 싱글톤 인스턴스 반환"""
     global _driver_pool
     if _driver_pool is None:
-        _driver_pool = ChromeDriverPool(pool_size=3)
+        _driver_pool = ChromeDriverPool(pool_size=10)  # 7개 서버 + 여유분
     return _driver_pool
