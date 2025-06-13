@@ -303,26 +303,36 @@ class DOMCrawler:
         """커스텀 select box에서 옵션 선택"""
         try:
             if select_type == "server":
-                # 서버 select box 클릭
-                server_box = self.wait.until(
-                    EC.element_to_be_clickable((By.CSS_SELECTOR, ".select_server .select_box"))
-                )
-                server_box.click()
-                time.sleep(0.5)
-                
-                # 옵션 선택
-                option_xpath = f"//li[@data-searchtype='serverid' and text()='{option_text}']"
-                option = self.wait.until(
-                    EC.element_to_be_clickable((By.XPATH, option_xpath))
-                )
-                option.click()
+                # JavaScript를 사용해서 서버 선택
+                server_id = self.server_map.get(option_text)
+                if server_id:
+                    script = f"""
+                    // 서버 select box 찾기
+                    var serverBox = document.querySelector('.select_server .select_box');
+                    if (serverBox) {{
+                        // selectBoxHandler 호출
+                        selectBoxHandler(serverBox);
+                        
+                        // 잠시 대기 후 옵션 클릭
+                        setTimeout(function() {{
+                            var option = document.querySelector('li[data-serverid="{server_id}"]');
+                            if (option) {{
+                                option.click();
+                            }}
+                        }}, 500);
+                    }}
+                    """
+                    self.driver.execute_script(script)
+                    time.sleep(1)
                 
             elif select_type == "class":
-                # 클래스 select box 클릭
+                # 클래스 선택은 일단 기본 방식으로
                 class_box = self.wait.until(
                     EC.element_to_be_clickable((By.CSS_SELECTOR, ".select_class .select_box"))
                 )
-                class_box.click()
+                
+                # JavaScript로 클릭
+                self.driver.execute_script("arguments[0].click();", class_box)
                 time.sleep(0.5)
                 
                 # 옵션 선택
@@ -330,7 +340,7 @@ class DOMCrawler:
                 option = self.wait.until(
                     EC.element_to_be_clickable((By.XPATH, option_xpath))
                 )
-                option.click()
+                self.driver.execute_script("arguments[0].click();", option)
                 
         except Exception as e:
             logger.error(f"커스텀 select box 선택 실패 ({select_type}, {option_text}): {e}")
@@ -509,6 +519,41 @@ def test_page_source_debug():
         crawler.close()
 
 
+def test_filter_functionality():
+    """필터 기능 테스트"""
+    crawler = DOMCrawler()
+    
+    try:
+        logger.info("=== 서버 필터 기능 테스트 ===")
+        
+        # 드라이버 설정
+        if not crawler.driver:
+            crawler.setup_driver()
+        
+        # 랭킹 페이지 이동
+        crawler.navigate_to_ranking_page(1)
+        
+        # 서버 선택 테스트
+        logger.info("아이라 서버로 변경 시도")
+        crawler.select_custom_option("server", "아이라")
+        
+        # 잠시 대기 후 데이터 추출
+        time.sleep(3)
+        data = crawler.extract_ranking_data()
+        
+        if data:
+            logger.info(f"아이라 서버 데이터: {len(data)}개 추출")
+            for i, item in enumerate(data[:3]):
+                logger.info(f"{i+1}. {item}")
+        else:
+            logger.warning("필터링된 데이터 없음")
+            
+    except Exception as e:
+        logger.error(f"필터 테스트 실패: {e}")
+    finally:
+        crawler.close()
+
+
 def test_character_search():
     """캐릭터 검색 테스트"""
     logger.info("캐릭터 검색 테스트 스킵 (필터 문제로 인해)")
@@ -625,11 +670,16 @@ if __name__ == "__main__":
         
         time.sleep(2)
         
+        # 필터 기능 테스트
+        test_filter_functionality()
+        
+        time.sleep(2)
+        
         # 캐릭터 검색 테스트 (스킵)
         test_character_search()
         
         # 나머지 테스트들은 일단 스킵
-        logger.info("필터 기능 문제로 인해 나머지 테스트들은 스킵합니다.")
+        logger.info("복잡한 테스트들은 기본 기능 확인 후 진행합니다.")
         
     except KeyboardInterrupt:
         logger.info("사용자에 의해 중단됨")
