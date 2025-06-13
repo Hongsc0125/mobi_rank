@@ -84,17 +84,36 @@ class ChromeDriverPool:
         opts.add_argument("--no-sandbox")
         opts.add_argument("--disable-dev-shm-usage")
         opts.add_argument("--disable-gpu")
+        opts.add_argument("--disable-web-security")
+        opts.add_argument("--disable-features=VizDisplayCompositor")
         opts.add_argument("window-size=1200,800")
+        opts.add_argument("--disable-blink-features=AutomationControlled")
+        opts.add_argument("--disable-extensions")
+        opts.add_argument("--disable-plugins")
+        opts.add_argument("--disable-images")  # 이미지 로딩 비활성화로 속도 향상
         # 브라우저 프로세스 고아(orphaned) 방지
         opts.add_argument("--disable-features=site-per-process")
         opts.add_experimental_option("detach", False)
-        opts.add_experimental_option("excludeSwitches", ["enable-logging"])
+        opts.add_experimental_option("excludeSwitches", ["enable-logging", "enable-automation"])
+        opts.add_experimental_option('useAutomationExtension', False)
+        
+        # User-Agent 설정 (DOM 조작 안정성)
+        opts.add_argument('--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
         
         # 서비스 타임아웃 증가
         service = Service(executable_path=_chromedriver_path)
         service.service_args = ['--verbose', '--log-path=chromedriver.log']
         
-        return webdriver.Chrome(service=service, options=opts)
+        driver = webdriver.Chrome(service=service, options=opts)
+        
+        # DOM 조작을 위한 타임아웃 설정
+        driver.set_page_load_timeout(30)
+        driver.implicitly_wait(10)
+        
+        # webdriver 속성 숨기기 (anti-detection)
+        driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+        
+        return driver
     
     def get_driver(self, timeout=30):
         """사용 가능한 드라이버 가져오기"""

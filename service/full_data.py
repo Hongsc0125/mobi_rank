@@ -38,12 +38,14 @@ def get_driver():
     
     return webdriver.Chrome(service=service, options=opts)
 
-def fetch_rank_via_requests(server=None, name="", rank_type=1):
-    """특정 서버와 캐릭터 이름으로 랭킹 데이터를 가져옵니다."""
+def fetch_rank_via_dom(server=None, name="", rank_type=1):
+    """DOM 조작을 통해 특정 서버와 캐릭터 이름으로 랭킹 데이터를 가져옵니다."""
+    from selenium.webdriver.common.by import By
+    from selenium.webdriver.support.ui import WebDriverWait
+    from selenium.webdriver.support import expected_conditions as EC
+    from selenium.common.exceptions import TimeoutException
+    
     list_url = f"https://mabinogimobile.nexon.com/Ranking/List?t={rank_type}"
-    api_url  = "https://mabinogimobile.nexon.com/Ranking/List/rankdata"
-
-    s = switch_server(server_name=server)
     driver = None
     
     # 드라이버 풀에서 드라이버 가져오기
@@ -52,44 +54,96 @@ def fetch_rank_via_requests(server=None, name="", rank_type=1):
     try:
         # 드라이버 풀에서 드라이버 얻기
         driver = pool.get_driver()
-        driver.set_page_load_timeout(30)  # 페이지 로드 타임아웃 설정
+        driver.set_page_load_timeout(30)
+        wait = WebDriverWait(driver, 20)
+        
+        # 페이지 이동
+        logging.info(f"랭킹 페이지로 이동: {list_url}")
         driver.get(list_url)
-        time.sleep(2)
-
-        # 쿠키 수집 및 세션 설정
-        sess = requests.Session()
-        for ck in driver.get_cookies():
-            sess.cookies.set(ck['name'], ck['value'])
+        
+        # 페이지 로딩 대기
+        wait.until(EC.presence_of_element_located((By.TAG_NAME, "body")))
+        time.sleep(3)
+        
+        # 서버 선택
+        if server:
+            select_server_option(driver, server)
+            time.sleep(2)
+        
+        # 캐릭터 검색
+        if name:
+            search_character(driver, name)
+            time.sleep(3)
             
-        headers = {
-            "User-Agent":          driver.execute_script("return navigator.userAgent;"),
-            "Accept":              "*/*",
-            "Referer":             list_url,
-            "X-Requested-With":    "XMLHttpRequest",
-            "Origin":              "https://mabinogimobile.nexon.com",
-            "Content-Type":        "application/x-www-form-urlencoded; charset=UTF-8",
-        }
-        data = {
-            "t":       str(rank_type),
-            "pageno":  "1",
-            "s":       s,
-            "c":       "0",
-            "search":  name,
-        }
-
-        # API 요청 수행
-        resp = sess.post(api_url, headers=headers, data=data, timeout=30)
-        resp.raise_for_status()
-        return resp.text
+        # 랭킹 데이터 로딩 대기
+        wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "div[data-mm-rankinglist], ul.list")))
+        
+        # 페이지 소스 반환
+        return driver.page_source
     
     except Exception as e:
-        logging.error(f"랭킹 데이터 요청 중 오류 (타입 {rank_type}): {str(e)}")
+        logging.error(f"DOM 랭킹 데이터 요청 중 오류 (타입 {rank_type}): {str(e)}")
         raise
     
     finally:
         # 드라이버를 풀에 반환
         if driver:
             pool.release_driver(driver)
+
+def select_server_option(driver, server_name):
+    """커스텀 select box에서 서버 선택"""
+    server_map = {
+        "데이안": 1, "아이라": 2, "던컨": 3, "알리사": 4,
+        "메이븐": 5, "라사": 6, "칼릭스": 7
+    }
+    
+    server_id = server_map.get(server_name)
+    if not server_id:
+        return
+        
+    try:
+        script = f"""
+        // 서버 select box 찾기
+        var serverBox = document.querySelector('.select_server .select_box');
+        if (serverBox) {{
+            // selectBoxHandler 호출
+            if (typeof selectBoxHandler === 'function') {{
+                selectBoxHandler(serverBox);
+                
+                // 잠시 대기 후 옵션 클릭
+                setTimeout(function() {{
+                    var option = document.querySelector('li[data-serverid="{server_id}"]');
+                    if (option) {{
+                        option.click();
+                    }}
+                }}, 500);
+            }}
+        }}
+        """
+        driver.execute_script(script)
+        logging.info(f"서버 선택: {server_name}")
+    except Exception as e:
+        logging.warning(f"서버 선택 실패: {e}")
+
+def search_character(driver, character_name):
+    """캐릭터 이름으로 검색"""
+    try:
+        # 검색 입력창에 캐릭터명 입력
+        search_input = driver.find_element(By.CSS_SELECTOR, "input[name='search']")
+        search_input.clear()
+        search_input.send_keys(character_name)
+        
+        # 검색 버튼 클릭
+        search_button = driver.find_element(By.CSS_SELECTOR, "button[data-searchtype='search']")
+        driver.execute_script("arguments[0].click();", search_button)
+        
+        logging.info(f"캐릭터 검색: {character_name}")
+    except Exception as e:
+        logging.warning(f"캐릭터 검색 실패: {e}")
+
+def fetch_rank_via_requests(server=None, name="", rank_type=1):
+    """기존 함수명 호환성을 위한 wrapper 함수"""
+    return fetch_rank_via_dom(server, name, rank_type)
 
 def switch_server(server_name):
     server_map = {
