@@ -793,27 +793,33 @@ def fast_sequential_crawl_worker(server_num, div=1):
         
         for idx, character_name in enumerate(character_list):
             try:
-                logger.debug(f"서버 {server_name} [{idx+1}/{len(character_list)}] '{character_name}' 검색 중...")
+                logger.info(f"서버 {server_name} [{idx+1}/{len(character_list)}] '{character_name}' 검색 중...")
                 
                 # service/full_data.py의 검증된 함수 사용 (server.py와 완전 동일)
                 html_data = fetch_rank_via_dom(server=server_name, name=character_name, rank_type=div)
                 
                 if html_data:
+                    logger.info(f"서버 {server_name} '{character_name}' HTML 데이터 획득 성공")
                     # HTML 파싱
                     parsed_data = parse_rank_html(html_data)
                     if parsed_data:
+                        logger.info(f"서버 {server_name} '{character_name}' 파싱 성공: {len(parsed_data)}개 아이템")
                         # DB 저장 (server.py와 동일)
                         result = insert_data(parsed_data, server=server_name, div=div)
+                        logger.info(f"서버 {server_name} '{character_name}' insert_data 결과: {result}")
                         if result.get('success', False):
                             success_count += 1
                             all_data.extend(parsed_data)
-                            logger.debug(f"서버 {server_name} '{character_name}' 성공: {len(parsed_data)}개 저장")
+                            logger.info(f"서버 {server_name} '{character_name}' 성공: {len(parsed_data)}개 저장")
                         else:
                             fail_count += 1
+                            logger.warning(f"서버 {server_name} '{character_name}' 저장 실패: {result}")
                     else:
                         fail_count += 1
+                        logger.warning(f"서버 {server_name} '{character_name}' 파싱 결과 없음")
                 else:
                     fail_count += 1
+                    logger.warning(f"서버 {server_name} '{character_name}' HTML 데이터 없음")
                     
                 # 진행률 로깅 (100개마다)
                 if (idx + 1) % 100 == 0:
