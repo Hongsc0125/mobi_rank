@@ -706,8 +706,10 @@ def fast_sequential_crawl_worker(server_num, div=1):
     logger.info(f"서버 {server_name} 고속 DOM 크롤링 시작 (캐릭터 검색 기반)")
     
     try:
-        # 고성능 드라이버 생성
-        driver = get_driver(high_performance=True)
+        # 드라이버 풀에서 안정적인 드라이버 가져오기 (server.py와 동일)
+        from service.driver_pool import get_driver_pool
+        driver_pool = get_driver_pool()
+        driver = driver_pool.get_driver()
         
         # 데이터 수집기 초기화 (큰 배치 크기로 고속 처리)
         collector = DataCollector(batch_size=5000, div=div, server_name=server_name)
@@ -734,9 +736,9 @@ def fast_sequential_crawl_worker(server_num, div=1):
             collector.flush()
             logger.info(f"서버 {server_name} 모든 데이터 저장 완료")
         
-        # 드라이버 정리
+        # 드라이버 풀에 반환 (server.py와 동일)
         if driver:
-            driver.quit()
+            driver_pool.release_driver(driver)
             
         logger.info(f"서버 {server_name} 고속 크롤링 완료")
         
@@ -744,7 +746,7 @@ def fast_sequential_crawl_worker(server_num, div=1):
         logger.error(f"서버 {server_name} 고속 크롤링 실패: {e}")
         if 'driver' in locals() and driver:
             try:
-                driver.quit()
+                driver_pool.release_driver(driver)
             except:
                 pass
 
