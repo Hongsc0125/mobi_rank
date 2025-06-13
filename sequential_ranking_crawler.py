@@ -41,7 +41,7 @@ from psycopg2.extensions import connection as pg_connection
 import psutil
 import requests
 from bs4 import BeautifulSoup
-from fake_useragent import UserAgent  # UserAgent는 이후 랜덤화에 사용할 예정
+# from fake_useragent import UserAgent  # 사용하지 않으므로 주석 처리
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
@@ -642,6 +642,80 @@ def crawl_by_character_search_dom(driver, server_num, character_list, div=1):
         logger.error(f"서버 {server_name} 캐릭터 검색 크롤링 실패: {e}")
         return all_data
 
+def crawl_by_character_search_dom_safe(driver, server_num, character_list, div=1):
+    """안전한 캐릭터 검색 기반 크롤링 (Chrome 크래시 방지)"""
+    server_name = get_server_name(server_num)
+    all_data = []
+    processed_characters = set()
+    consecutive_failures = 0
+    max_consecutive_failures = 5
+    
+    logger.info(f"서버 {server_name} 안전한 캐릭터 검색 크롤링 시작: {len(character_list)}개 캐릭터")
+    
+    try:
+        for idx, character_name in enumerate(character_list):
+            try:
+                # 연속 실패 체크
+                if consecutive_failures >= max_consecutive_failures:
+                    logger.warning(f"서버 {server_name} 연속 {consecutive_failures}회 실패로 크롤링 중단")
+                    break
+                
+                # 이미 처리된 캐릭터는 스킵
+                if character_name in processed_characters:
+                    continue
+                
+                # 안전한 DOM 조작 시도
+                success = False
+                for attempt in range(2):  # 최대 2회 시도
+                    try:
+                        page_source, _ = fetch_rank_page_dom(driver, server_num, character_name, div)
+                        if page_source:
+                            page_data = parse_rank_html(page_source)
+                            
+                            # 중복 제거하면서 데이터 추가
+                            new_characters = 0
+                            for item in page_data:
+                                char_name = item.get('character', '')
+                                if char_name and char_name not in processed_characters:
+                                    all_data.append(item)
+                                    processed_characters.add(char_name)
+                                    new_characters += 1
+                            
+                            logger.debug(f"서버 {server_name} [{idx+1}/{len(character_list)}] '{character_name}' 성공: {len(page_data)}개 수집, {new_characters}개 신규")
+                            consecutive_failures = 0
+                            success = True
+                            break
+                        else:
+                            logger.warning(f"서버 {server_name} 캐릭터 '{character_name}' 검색 결과 없음 (시도 {attempt+1})")
+                            
+                    except Exception as e:
+                        logger.error(f"서버 {server_name} 캐릭터 '{character_name}' 검색 실패 (시도 {attempt+1}): {str(e)[:100]}")
+                        time.sleep(2)  # 실패 시 대기
+                
+                if not success:
+                    consecutive_failures += 1
+                    logger.error(f"서버 {server_name}, 캐릭터 '{character_name}' 검색 실패. 다음으로 넘어감.")
+                
+                # Chrome 안정화를 위한 대기
+                time.sleep(0.5)
+                
+                # 진행률 로깅 (50개마다)
+                if (idx + 1) % 50 == 0:
+                    logger.info(f"서버 {server_name} 진행률: {idx+1}/{len(character_list)} ({((idx+1)/len(character_list)*100):.1f}%), 총 수집: {len(all_data)}개")
+                
+            except Exception as e:
+                consecutive_failures += 1
+                logger.error(f"서버 {server_name} 캐릭터 '{character_name}' 처리 오류: {e}")
+                time.sleep(1)
+                continue
+        
+        logger.info(f"서버 {server_name} 안전 크롤링 완료: {len(all_data)}개 수집 (중복 제거됨)")
+        return all_data
+        
+    except Exception as e:
+        logger.error(f"서버 {server_name} 안전 크롤링 실패: {e}")
+        return all_data
+
 def get_character_list_from_db(server_name, exclude_recent_hours=1):
     """DB에서 해당 서버의 캐릭터 목록 가져오기 (최근 업데이트된 캐릭터 제외)"""
     from service.db_session import SessionLocal, get_current_time
@@ -709,7 +783,19 @@ def fast_sequential_crawl_worker(server_num, div=1):
         # 드라이버 풀에서 안정적인 드라이버 가져오기 (server.py와 동일)
         from service.driver_pool import get_driver_pool
         driver_pool = get_driver_pool()
-        driver = driver_pool.get_driver(timeout=60)  # 더 긴 대기 시간
+        driver = None
+        
+        # 안정적인 드라이버 획득을 위한 재시도
+        for attempt in range(3):
+            try:
+                driver = driver_pool.get_driver(timeout=30)
+                break
+            except Exception as e:
+                logger.warning(f"서버 {server_name} 드라이버 획득 시도 {attempt+1} 실패: {e}")
+                if attempt < 2:
+                    time.sleep(5)
+                else:
+                    raise
         
         # 데이터 수집기 초기화 (큰 배치 크기로 고속 처리)
         collector = DataCollector(batch_size=5000, div=div, server_name=server_name)
@@ -718,8 +804,8 @@ def fast_sequential_crawl_worker(server_num, div=1):
         character_list = generate_character_search_sequence(server_name, exclude_recent_hours=1)
         logger.info(f"서버 {server_name} 캐릭터 검색 대상: {len(character_list)}개 (최근 업데이트 제외)")
         
-        # 캐릭터 검색 기반 크롤링 (중복 제거)
-        all_data = crawl_by_character_search_dom(driver, server_num, character_list, div)
+        # 캐릭터 검색 기반 크롤링 (중복 제거, 오류 처리 강화)
+        all_data = crawl_by_character_search_dom_safe(driver, server_num, character_list, div)
         
         # 데이터 저장
         if all_data:
@@ -2175,6 +2261,42 @@ def sequential_rank_crawl_worker(server_num, div=1):
         gc.collect()
 
 
+def sequential_server_crawl_worker():
+    """서버별 순차 처리 워커 (DOM 안정성을 위해 하나씩 처리)"""
+    thread_name = threading.current_thread().name
+    update_thread_status(thread_name, "순차 서버 크롤링 시작")
+    
+    server_nums = list(range(1, 8))  # 1부터 7까지의 서버
+    
+    while not shutdown_event.is_set():
+        try:
+            # 모든 서버를 순차적으로 처리
+            for server_num in server_nums:
+                if shutdown_event.is_set():
+                    break
+                    
+                try:
+                    logger.info(f"서버 {get_server_name(server_num)} 크롤링 시작")
+                    fast_sequential_crawl_worker(server_num, div=1)
+                    logger.info(f"서버 {get_server_name(server_num)} 크롤링 완료")
+                    
+                    # 서버 간 간격 (Chrome 안정화)
+                    time.sleep(5)
+                    
+                except Exception as e:
+                    logger.error(f"서버 {get_server_name(server_num)} 크롤링 오류: {e}")
+                    time.sleep(10)  # 오류 시 더 긴 대기
+                    
+            # 한 사이클 완료 후 대기
+            logger.info("모든 서버 크롤링 완료, 다음 사이클까지 대기")
+            time.sleep(60)  # 1분 대기 후 다음 사이클
+            
+        except Exception as e:
+            logger.error(f"순차 서버 크롤러 오류: {e}")
+            time.sleep(30)
+    
+    update_thread_status(thread_name, "종료됨")
+
 def start_sequential_rank_crawling():
     """모든 서버에 대해 순차적 랭킹 크롤링 시작"""
     try:
@@ -2193,27 +2315,23 @@ def start_sequential_rank_crawling():
             processed_characters.clear()
             logger.info("처리된 캐릭터 추적 세트 초기화")
         
-        # 서버당 스레드 수를 1개로 고정
-        threads_per_server = 1
+        # DOM 안정성을 위해 서버별 순차 처리 (동시 DOM 조작 방지)
+        logger.info("Chrome 안정성을 위해 서버별 순차 처리로 변경")
         
         # 시스템 사양 정보 로깅
         cpu_count = psutil.cpu_count()
         memory_gb = psutil.virtual_memory().total / (1024**3)
-        logger.info(f"서버당 스레드 수: {threads_per_server} (단일 스레드 사용) (CPU: {cpu_count}코어, 메모리: {memory_gb:.1f}GB)")
+        logger.info(f"시스템 사양: CPU {cpu_count}코어, 메모리 {memory_gb:.1f}GB")
         
-        server_nums = list(range(1, 8))  # 1부터 7까지의 서버
-        
-        for server_num in server_nums:
-            for i in range(threads_per_server):
-                thread = threading.Thread(
-                    target=sequential_rank_crawl_worker,
-                    args=(server_num, 1),
-                    name=f"순차크롤러_{server_num}_{i}"
-                )
-                thread.daemon = True  # 데몬 쓰레드로 설정
-                thread.start()
-                active_threads.append(thread)
-                logger.info(f"서버 {server_num} 순차 크롤러 #{i} 시작됨")
+        # 단일 쓰레드로 서버별 순차 처리 시작
+        thread = threading.Thread(
+            target=sequential_server_crawl_worker,
+            name="순차_서버_크롤러"
+        )
+        thread.daemon = True
+        thread.start()
+        active_threads.append(thread)
+        logger.info("서버별 순차 처리 크롤러 시작됨")
         
         # 모니터링 쓰레드 시작
         monitor_thread = threading.Thread(target=thread_monitor, name="모니터링")

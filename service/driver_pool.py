@@ -81,7 +81,7 @@ class ChromeDriverPool:
 
         opts = Options()
         
-        # 필수 옵션만 사용
+        # Chrome 안정성 개선 옵션
         opts.add_argument("--headless=new")
         opts.add_argument("--no-sandbox")
         opts.add_argument("--disable-dev-shm-usage")
@@ -94,6 +94,11 @@ class ChromeDriverPool:
         opts.add_argument("--window-size=1200,800")
         opts.add_argument("--disable-blink-features=AutomationControlled")
         opts.add_argument("--disable-images")  # 속도 향상
+        opts.add_argument("--disable-web-security")
+        opts.add_argument("--disable-features=TranslateUI")
+        opts.add_argument("--disable-ipc-flooding-protection")
+        opts.add_argument("--max_old_space_size=4096")
+        opts.add_argument("--single-process")  # 프로세스 격리 비활성화로 안정성 향상
         
         # 로그 완전 차단
         opts.add_experimental_option("excludeSwitches", ["enable-logging", "enable-automation"])
@@ -238,5 +243,5 @@ def get_driver_pool():
     """드라이버 풀 싱글톤 인스턴스 반환"""
     global _driver_pool
     if _driver_pool is None:
-        _driver_pool = ChromeDriverPool(pool_size=10)  # 7개 서버 + 여유분
+        _driver_pool = ChromeDriverPool(pool_size=2)  # 순차 처리용 최소 드라이버
     return _driver_pool
