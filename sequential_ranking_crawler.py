@@ -726,11 +726,12 @@ def get_character_list_from_db(server_name, exclude_recent_hours=1):
         cutoff_time = get_current_time() - timedelta(hours=exclude_recent_hours)
         
         query = text("""
-            SELECT DISTINCT character_name 
+            SELECT character_name, MIN(retrieved_at) as earliest_retrieved_at
             FROM mabinogi_ranking 
             WHERE server_name = :server_name 
             AND (retrieved_at < :cutoff_time OR retrieved_at IS NULL)
-            ORDER BY character_name
+            GROUP BY character_name
+            ORDER BY earliest_retrieved_at ASC NULLS FIRST, character_name ASC
         """)
         result = db.execute(query, {
             'server_name': server_name,
