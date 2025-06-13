@@ -507,156 +507,52 @@ def get_server_name(server_num):
     return SERVER_NAMES.get(server_num, "데이안")  # 기본값 "데이안"
 
 def fetch_rank_page_dom(driver, server_num, search_name="", div=1, high_performance_driver=True):
-    """DOM 조작 기반으로 랭킹 데이터 가져오기 (빠른 속도 최적화)"""
+    """service/full_data.py와 동일한 검증된 DOM 로직 사용"""
     from selenium.webdriver.common.by import By
     from selenium.webdriver.support.ui import WebDriverWait
     from selenium.webdriver.support import expected_conditions as EC
-    from selenium.common.exceptions import TimeoutException
+    from service.full_data import select_server_option, search_character
     
     list_url = f"https://mabinogimobile.nexon.com/Ranking/List?t={div}"
     server_name = get_server_name(server_num)
     
-    attempts = 0
-    last_exception = None
-    driver_recreated = False
-    
-    while attempts < MAX_FETCH_RETRIES:
-        try:
-            wait = WebDriverWait(driver, 10)  # 빠른 타임아웃
-            
-            # 페이지 이동 (필요한 경우만)
-            if not driver.current_url.startswith(list_url):
-                driver.get(list_url)
-                wait.until(EC.presence_of_element_located((By.TAG_NAME, "body")))
-                # 페이지 완전 로딩 대기
-                wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "input[name='search']")))
-                time.sleep(2)  # 페이지 완전 로딩 대기
-            
-            # 서버 선택 (server_num이 1이 아닌 경우만)
-            if server_num != 1:  # 데이안이 기본값
-                select_server_dom(driver, server_name)
-                time.sleep(0.5)  # 짧은 대기
-            
-            # 캐릭터 검색 (search_name이 있는 경우만)
-            if search_name:
-                search_success = search_character_dom(driver, search_name)
-                if not search_success:
-                    logger.error(f"캐릭터 검색 실패: {search_name}")
-                    raise Exception(f"캐릭터 검색 실패: {search_name}")
-                time.sleep(2)  # 검색 결과 로딩 대기 (조금 더 길게)
-            
-            # 랭킹 데이터 로딩 대기
-            wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "ul.list, .no_data")))
-            
-            # 페이지 소스 반환
-            return driver.page_source, driver
-            
-        except Exception as e:
-            logger.error(f"DOM 크롤링 실패: 서버 {server_name}, 검색어 '{search_name}', 시도 {attempts + 1}/{MAX_FETCH_RETRIES}. 오류: {e}")
-            # 더 자세한 오류 정보 출력
-            if attempts == 0:  # 첫 번째 실패시에만 상세 로그
-                try:
-                    current_url = driver.current_url if driver else "driver없음"
-                    logger.error(f"현재 URL: {current_url}")
-                    page_source_len = len(driver.page_source) if driver else 0
-                    logger.error(f"페이지 소스 길이: {page_source_len}")
-                except:
-                    logger.error("드라이버 상태 확인 불가")
-            last_exception = e
-            attempts += 1
-            
-            if attempts < MAX_FETCH_RETRIES:
-                # 드라이버 재생성
-                if driver:
-                    try:
-                        driver.quit()
-                    except:
-                        pass
-                driver = get_driver(high_performance=high_performance_driver)
-                time.sleep(2)  # 재생성 후 짧은 대기
-            else:
-                logger.error(f"DOM 크롤링 최종 실패: 서버 {server_name}, 검색어 '{search_name}'")
-                return None, driver
-    
-    return None, driver
-
-def select_server_dom(driver, server_name):
-    """DOM 조작으로 서버 선택 (최적화된 버전)"""
-    server_map = {
-        "데이안": 1, "아이라": 2, "던컨": 3, "알리사": 4,
-        "메이븐": 5, "라사": 6, "칼릭스": 7
-    }
-    
-    server_id = server_map.get(server_name)
-    if not server_id:
-        return
-        
     try:
-        # JavaScript로 빠른 서버 선택
-        script = f"""
-        var option = document.querySelector('li[data-serverid="{server_id}"]');
-        if (option) {{
-            option.click();
-            return true;
-        }}
-        return false;
-        """
-        result = driver.execute_script(script)
-        if result:
-            logger.debug(f"서버 선택 완료: {server_name}")
+        driver.set_page_load_timeout(30)
+        wait = WebDriverWait(driver, 20)
+        
+        # 페이지 이동
+        logger.debug(f"랭킹 페이지로 이동: {list_url}")
+        driver.get(list_url)
+        
+        # 페이지 로딩 대기
+        wait.until(EC.presence_of_element_located((By.TAG_NAME, "body")))
+        time.sleep(3)
+        
+        # 서버 선택
+        if server_name:
+            select_server_option(driver, server_name)
+            time.sleep(2)
+        
+        # 캐릭터 검색
+        if search_name:
+            search_character(driver, search_name)
+            time.sleep(3)
+            
+        # 랭킹 데이터 로딩 대기
+        wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "div[data-mm-rankinglist], ul.list")))
+        
+        # 추가 대기 시간 (DOM 업데이트 완료 대기)
+        time.sleep(2)
+        
+        # 페이지 소스 반환
+        page_source = driver.page_source
+        return page_source, driver
+        
     except Exception as e:
-        logger.warning(f"서버 선택 실패: {e}")
+        logger.error(f"DOM 크롤링 실패: 서버 {server_name}, 검색어 '{search_name}'. 오류: {e}")
+        return None, driver
 
-def search_character_dom(driver, character_name):
-    """DOM 조작으로 캐릭터 검색 (최적화된 버전)"""
-    try:
-        # 먼저 요소 존재 확인 (여러 선택자 시도)
-        check_script = """
-        var input = document.querySelector('input[name="search"]') || 
-                   document.querySelector('input[type="text"]') ||
-                   document.querySelector('#search') ||
-                   document.querySelector('.search-input');
-        var button = document.querySelector('button[data-searchtype="search"]') || 
-                    document.querySelector('button[type="submit"]') ||
-                    document.querySelector('.search-btn') ||
-                    document.querySelector('#searchBtn');
-        return {
-            hasInput: !!input,
-            hasButton: !!button,
-            inputValue: input ? input.value : null,
-            inputSelector: input ? input.outerHTML.substring(0, 100) : null,
-            buttonSelector: button ? button.outerHTML.substring(0, 100) : null
-        };
-        """
-        element_check = driver.execute_script(check_script)
-        logger.debug(f"검색 요소 확인: {element_check}")
-        
-        if not element_check.get('hasInput') or not element_check.get('hasButton'):
-            logger.error(f"검색 요소 없음: input={element_check.get('hasInput')}, button={element_check.get('hasButton')}")
-            return False
-        
-        # JavaScript로 빠른 검색 (특수문자 이스케이프)
-        escaped_name = character_name.replace("'", "\\'").replace('"', '\\"')
-        script = f"""
-        var input = document.querySelector('input[name="search"]');
-        var button = document.querySelector('button[data-searchtype="search"]');
-        if (input && button) {{
-            input.value = '{escaped_name}';
-            button.click();
-            return true;
-        }}
-        return false;
-        """
-        result = driver.execute_script(script)
-        if result:
-            logger.debug(f"캐릭터 검색 완료: {character_name}")
-            return True
-        else:
-            logger.error(f"JavaScript 검색 실행 실패: {character_name}")
-            return False
-    except Exception as e:
-        logger.error(f"캐릭터 검색 실패: {character_name}, 오류: {e}")
-        return False
+# 기존 DOM 함수들은 service/full_data.py의 검증된 함수로 대체됨
 
 def navigate_to_page_dom(driver, page_number):
     """JavaScript 기반 페이지 이동 (고속 처리)"""
