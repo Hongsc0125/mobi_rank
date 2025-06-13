@@ -505,8 +505,248 @@ def get_server_name(server_num):
     """서버 번호를 서버 이름으로 변환"""
     return SERVER_NAMES.get(server_num, "데이안")  # 기본값 "데이안"
 
+def fetch_rank_page_dom(driver, server_num, search_name="", div=1, high_performance_driver=True):
+    """DOM 조작 기반으로 랭킹 데이터 가져오기 (빠른 속도 최적화)"""
+    from selenium.webdriver.common.by import By
+    from selenium.webdriver.support.ui import WebDriverWait
+    from selenium.webdriver.support import expected_conditions as EC
+    from selenium.common.exceptions import TimeoutException
+    
+    list_url = f"https://mabinogimobile.nexon.com/Ranking/List?t={div}"
+    server_name = get_server_name(server_num)
+    
+    attempts = 0
+    last_exception = None
+    driver_recreated = False
+    
+    while attempts < MAX_FETCH_RETRIES:
+        try:
+            wait = WebDriverWait(driver, 10)  # 빠른 타임아웃
+            
+            # 페이지 이동 (필요한 경우만)
+            if not driver.current_url.startswith(list_url):
+                driver.get(list_url)
+                wait.until(EC.presence_of_element_located((By.TAG_NAME, "body")))
+                time.sleep(1)  # 최소 대기시간
+            
+            # 서버 선택 (server_num이 1이 아닌 경우만)
+            if server_num != 1:  # 데이안이 기본값
+                select_server_dom(driver, server_name)
+                time.sleep(0.5)  # 짧은 대기
+            
+            # 캐릭터 검색 (search_name이 있는 경우만)
+            if search_name:
+                search_character_dom(driver, search_name)
+                time.sleep(1)  # 검색 결과 로딩 대기
+            
+            # 랭킹 데이터 로딩 대기
+            wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "ul.list, .no_data")))
+            
+            # 페이지 소스 반환
+            return driver.page_source, driver
+            
+        except Exception as e:
+            logger.debug(f"DOM 크롤링 실패: 서버 {server_name}, 검색어 '{search_name}', 시도 {attempts + 1}/{MAX_FETCH_RETRIES}. 오류: {e}")
+            last_exception = e
+            attempts += 1
+            
+            if attempts < MAX_FETCH_RETRIES:
+                # 드라이버 재생성
+                if driver:
+                    try:
+                        driver.quit()
+                    except:
+                        pass
+                driver = get_driver(high_performance=high_performance_driver)
+                time.sleep(2)  # 재생성 후 짧은 대기
+            else:
+                logger.error(f"DOM 크롤링 최종 실패: 서버 {server_name}, 검색어 '{search_name}'")
+                return None, driver
+    
+    return None, driver
+
+def select_server_dom(driver, server_name):
+    """DOM 조작으로 서버 선택 (최적화된 버전)"""
+    server_map = {
+        "데이안": 1, "아이라": 2, "던컨": 3, "알리사": 4,
+        "메이븐": 5, "라사": 6, "칼릭스": 7
+    }
+    
+    server_id = server_map.get(server_name)
+    if not server_id:
+        return
+        
+    try:
+        # JavaScript로 빠른 서버 선택
+        script = f"""
+        var option = document.querySelector('li[data-serverid="{server_id}"]');
+        if (option) {{
+            option.click();
+            return true;
+        }}
+        return false;
+        """
+        result = driver.execute_script(script)
+        if result:
+            logger.debug(f"서버 선택 완료: {server_name}")
+    except Exception as e:
+        logger.warning(f"서버 선택 실패: {e}")
+
+def search_character_dom(driver, character_name):
+    """DOM 조작으로 캐릭터 검색 (최적화된 버전)"""
+    try:
+        # JavaScript로 빠른 검색
+        script = f"""
+        var input = document.querySelector('input[name="search"]');
+        var button = document.querySelector('button[data-searchtype="search"]');
+        if (input && button) {{
+            input.value = '{character_name}';
+            button.click();
+            return true;
+        }}
+        return false;
+        """
+        result = driver.execute_script(script)
+        if result:
+            logger.debug(f"캐릭터 검색 완료: {character_name}")
+    except Exception as e:
+        logger.warning(f"캐릭터 검색 실패: {e}")
+
+def navigate_to_page_dom(driver, page_number):
+    """JavaScript 기반 페이지 이동 (고속 처리)"""
+    try:
+        # mmRanking.list JavaScript 함수 호출
+        script = f"mmRanking.list({page_number}, null); return true;"
+        result = driver.execute_script(script)
+        if result:
+            logger.debug(f"페이지 {page_number} 이동 완료")
+            time.sleep(0.5)  # 최소 대기시간
+            return True
+    except Exception as e:
+        logger.warning(f"페이지 이동 실패: {e}")
+    return False
+
+def get_pagination_info_dom(driver):
+    """페이지네이션 정보 빠르게 추출"""
+    try:
+        script = """
+        var pagination = document.querySelector('div[data-mm-paging]');
+        var currentRange = document.querySelector('.current_range span');
+        var currentPage = document.querySelector('.pagination li.on');
+        
+        return {
+            totalCount: pagination ? parseInt(pagination.getAttribute('data-totalcount')) : 0,
+            currentRange: currentRange ? currentRange.textContent.trim() : '',
+            currentPage: currentPage ? parseInt(currentPage.textContent.trim()) : 1
+        };
+        """
+        result = driver.execute_script(script)
+        return result
+    except Exception as e:
+        logger.warning(f"페이지네이션 정보 추출 실패: {e}")
+        return {"totalCount": 0, "currentRange": "", "currentPage": 1}
+
+def crawl_all_pages_dom(driver, server_num, max_pages=50):
+    """모든 페이지를 DOM 조작으로 순차 크롤링 (고속 처리)"""
+    server_name = get_server_name(server_num)
+    all_data = []
+    
+    try:
+        # 첫 페이지 설정
+        if not fetch_rank_page_dom(driver, server_num, "", 1)[0]:
+            logger.error(f"서버 {server_name} 첫 페이지 로딩 실패")
+            return []
+        
+        # 페이지네이션 정보 확인
+        pagination_info = get_pagination_info_dom(driver)
+        total_count = pagination_info.get("totalCount", 0)
+        max_possible_pages = min(max_pages, (total_count + 19) // 20)  # 페이지당 20개
+        
+        logger.info(f"서버 {server_name} 전체 크롤링 시작: 총 {total_count}개, 최대 {max_possible_pages}페이지")
+        
+        for page in range(1, max_possible_pages + 1):
+            try:
+                # 첫 페이지가 아니면 페이지 이동
+                if page > 1:
+                    if not navigate_to_page_dom(driver, page):
+                        logger.warning(f"서버 {server_name} 페이지 {page} 이동 실패")
+                        continue
+                
+                # 현재 페이지 데이터 가져오기
+                page_source, _ = fetch_rank_page_dom(driver, server_num, "", 1)
+                if page_source:
+                    page_data = parse_rank_html(page_source)
+                    all_data.extend(page_data)
+                    logger.debug(f"서버 {server_name} 페이지 {page}: {len(page_data)}개 수집")
+                else:
+                    logger.warning(f"서버 {server_name} 페이지 {page} 데이터 없음")
+                
+                # 빠른 처리를 위한 최소 대기
+                time.sleep(0.3)
+                
+            except Exception as e:
+                logger.error(f"서버 {server_name} 페이지 {page} 처리 오류: {e}")
+                continue
+        
+        logger.info(f"서버 {server_name} 전체 크롤링 완료: {len(all_data)}개 수집")
+        return all_data
+        
+    except Exception as e:
+        logger.error(f"서버 {server_name} 전체 크롤링 실패: {e}")
+        return all_data
+
+def fast_sequential_crawl_worker(server_num, div=1):
+    """고속 DOM 조작 기반 순차 크롤링 워커 (새로운 방식)"""
+    server_name = get_server_name(server_num)
+    thread_name = f"고속크롤러_{server_name}"
+    
+    logger.info(f"서버 {server_name} 고속 DOM 크롤링 시작")
+    
+    try:
+        # 고성능 드라이버 생성
+        driver = get_driver(high_performance=True)
+        
+        # 데이터 수집기 초기화 (큰 배치 크기로 고속 처리)
+        collector = DataCollector(batch_size=5000, div=div, server_name=server_name)
+        
+        # 모든 페이지 크롤링
+        all_data = crawl_all_pages_dom(driver, server_num, max_pages=100)
+        
+        # 데이터 저장
+        if all_data:
+            logger.info(f"서버 {server_name} 총 {len(all_data)}개 데이터 수집 완료, DB 저장 시작")
+            
+            # 배치로 나누어 저장
+            batch_size = 1000
+            for i in range(0, len(all_data), batch_size):
+                batch = all_data[i:i+batch_size]
+                collector.add_batch(batch)
+                logger.debug(f"서버 {server_name} 배치 {i//batch_size + 1} 저장 완료 ({len(batch)}개)")
+            
+            # 최종 플러시
+            collector.flush()
+            logger.info(f"서버 {server_name} 모든 데이터 저장 완료")
+        
+        # 드라이버 정리
+        if driver:
+            driver.quit()
+            
+        logger.info(f"서버 {server_name} 고속 크롤링 완료")
+        
+    except Exception as e:
+        logger.error(f"서버 {server_name} 고속 크롤링 실패: {e}")
+        if 'driver' in locals() and driver:
+            try:
+                driver.quit()
+            except:
+                pass
+
 def fetch_rank_page(driver, server_num, search_name="", div=1, high_performance_driver=True):
-    """캐릭터 이름으로 기존 드라이버를 사용하여 랭킹 데이터 가져오기, 오류 시 재시도"""
+    """DOM 조작 기반으로 랭킹 데이터 가져오기 - 기존 함수명 호환성 유지"""
+    return fetch_rank_page_dom(driver, server_num, search_name, div, high_performance_driver)
+
+def fetch_rank_page_legacy(driver, server_num, search_name="", div=1, high_performance_driver=True):
+    """기존 requests 기반 크롤링 함수 (백업용)"""
     list_url = "https://mabinogimobile.nexon.com/Ranking/List?t=1"
     api_url  = "https://mabinogimobile.nexon.com/Ranking/List/rankdata"
     
