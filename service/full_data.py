@@ -127,6 +127,8 @@ def select_server_option(driver, server_name):
 
 def search_character(driver, character_name):
     """캐릭터 이름으로 검색"""
+    from selenium.webdriver.common.by import By
+    
     try:
         # 검색 입력창에 캐릭터명 입력
         search_input = driver.find_element(By.CSS_SELECTOR, "input[name='search']")
