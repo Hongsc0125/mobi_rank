@@ -507,7 +507,7 @@ def get_server_name(server_num):
     return SERVER_NAMES.get(server_num, "데이안")  # 기본값 "데이안"
 
 def fetch_rank_page_dom(driver, server_num, search_name="", div=1, high_performance_driver=True):
-    """service/full_data.py와 동일한 검증된 DOM 로직 사용"""
+    """service/full_data.py의 검증된 DOM 로직을 드라이버 풀 없이 사용"""
     from selenium.webdriver.common.by import By
     from selenium.webdriver.support.ui import WebDriverWait
     from selenium.webdriver.support import expected_conditions as EC
@@ -528,15 +528,12 @@ def fetch_rank_page_dom(driver, server_num, search_name="", div=1, high_performa
         wait.until(EC.presence_of_element_located((By.TAG_NAME, "body")))
         time.sleep(3)
         
-        # 서버 선택
+        # 서버 선택 (service/full_data.py와 동일한 함수 사용)
         if server_name:
             select_server_option(driver, server_name)
             time.sleep(2)
-            # 서버 선택 후 검색 입력창이 로딩될 때까지 대기
-            wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "input[name='search']")))
-            time.sleep(1)  # 추가 안정화 대기
         
-        # 캐릭터 검색
+        # 캐릭터 검색 (service/full_data.py와 동일한 함수 사용)
         if search_name:
             search_character(driver, search_name)
             time.sleep(3)
@@ -773,68 +770,69 @@ def generate_character_search_sequence(server_name, exclude_recent_hours=1):
     return all_patterns
 
 def fast_sequential_crawl_worker(server_num, div=1):
-    """고속 DOM 조작 기반 순차 크롤링 워커 (캐릭터 검색 기반 중복제거 방식)"""
+    """고속 DOM 조작 기반 순차 크롤링 워커 (service/full_data.py 방식 사용)"""
     server_name = get_server_name(server_num)
     thread_name = f"고속크롤러_{server_name}"
     
-    logger.info(f"서버 {server_name} 고속 DOM 크롤링 시작 (캐릭터 검색 기반)")
+    logger.info(f"서버 {server_name} 고속 DOM 크롤링 시작 (service/full_data.py 방식)")
     
     try:
-        # 드라이버 풀에서 안정적인 드라이버 가져오기 (server.py와 동일)
-        from service.driver_pool import get_driver_pool
-        driver_pool = get_driver_pool()
-        driver = None
-        
-        # 안정적인 드라이버 획득을 위한 재시도
-        for attempt in range(3):
-            try:
-                driver = driver_pool.get_driver(timeout=30)
-                break
-            except Exception as e:
-                logger.warning(f"서버 {server_name} 드라이버 획득 시도 {attempt+1} 실패: {e}")
-                if attempt < 2:
-                    time.sleep(5)
-                else:
-                    raise
-        
-        # 데이터 수집기 초기화 (큰 배치 크기로 고속 처리)
-        collector = DataCollector(batch_size=5000, div=div, server_name=server_name)
+        # service/full_data.py와 동일한 방식 사용 (server.py와 완전 동일)
+        from service.full_data import fetch_rank_via_dom, parse_rank_html
+        from service.db import insert_data
         
         # 캐릭터 검색 순서 생성 (DB + 추가 패턴, 최근 1시간 내 업데이트된 캐릭터 제외)
         character_list = generate_character_search_sequence(server_name, exclude_recent_hours=1)
         logger.info(f"서버 {server_name} 캐릭터 검색 대상: {len(character_list)}개 (최근 업데이트 제외)")
         
-        # 캐릭터 검색 기반 크롤링 (중복 제거, 오류 처리 강화)
-        all_data = crawl_by_character_search_dom_safe(driver, server_num, character_list, div)
+        # server.py와 동일한 방식으로 안전하게 크롤링
+        all_data = []
+        success_count = 0
+        fail_count = 0
         
-        # 데이터 저장
-        if all_data:
-            logger.info(f"서버 {server_name} 총 {len(all_data)}개 데이터 수집 완료, DB 저장 시작")
-            
-            # 배치로 나누어 저장
-            batch_size = 1000
-            for i in range(0, len(all_data), batch_size):
-                batch = all_data[i:i+batch_size]
-                collector.add_batch(batch)
-                logger.debug(f"서버 {server_name} 배치 {i//batch_size + 1} 저장 완료 ({len(batch)}개)")
-            
-            # 최종 플러시
-            collector.flush()
-            logger.info(f"서버 {server_name} 모든 데이터 저장 완료")
+        for idx, character_name in enumerate(character_list):
+            try:
+                logger.debug(f"서버 {server_name} [{idx+1}/{len(character_list)}] '{character_name}' 검색 중...")
+                
+                # service/full_data.py의 검증된 함수 사용 (server.py와 완전 동일)
+                html_data = fetch_rank_via_dom(server=server_name, name=character_name, rank_type=div)
+                
+                if html_data:
+                    # HTML 파싱
+                    parsed_data = parse_rank_html(html_data)
+                    if parsed_data:
+                        # DB 저장 (server.py와 동일)
+                        result = insert_data(parsed_data, server=server_name, div=div)
+                        if result.get('success', False):
+                            success_count += 1
+                            all_data.extend(parsed_data)
+                            logger.debug(f"서버 {server_name} '{character_name}' 성공: {len(parsed_data)}개 저장")
+                        else:
+                            fail_count += 1
+                    else:
+                        fail_count += 1
+                else:
+                    fail_count += 1
+                    
+                # 진행률 로깅 (100개마다)
+                if (idx + 1) % 100 == 0:
+                    logger.info(f"서버 {server_name} 진행률: {idx+1}/{len(character_list)} ({((idx+1)/len(character_list)*100):.1f}%), 성공: {success_count}, 실패: {fail_count}")
+                
+                # Chrome 안정성을 위한 대기
+                time.sleep(0.3)
+                
+            except Exception as e:
+                fail_count += 1
+                logger.error(f"서버 {server_name} '{character_name}' 처리 오류: {e}")
+                time.sleep(1)
+                continue
         
-        # 드라이버 풀에 반환 (server.py와 동일)
-        if driver:
-            driver_pool.release_driver(driver)
-            
+        logger.info(f"서버 {server_name} 크롤링 완료: 성공 {success_count}회, 실패 {fail_count}회, 총 데이터 {len(all_data)}개")
         logger.info(f"서버 {server_name} 고속 크롤링 완료")
         
     except Exception as e:
         logger.error(f"서버 {server_name} 고속 크롤링 실패: {e}")
-        if 'driver' in locals() and driver:
-            try:
-                driver_pool.release_driver(driver)
-            except:
-                pass
+        # service/full_data.py는 자체적으로 드라이버 관리하므로 별도 정리 불필요
 
 def fetch_rank_page(driver, server_num, search_name="", div=1, high_performance_driver=True):
     """DOM 조작 기반으로 랭킹 데이터 가져오기 - 기존 함수명 호환성 유지"""
