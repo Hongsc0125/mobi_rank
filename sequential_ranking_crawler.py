@@ -469,37 +469,38 @@ def shutdown_all():
 def get_driver(high_performance=True):
     chromedriver_autoinstaller.install()
     opts = Options()
+    
+    # 필수 옵션만 사용
     opts.add_argument("--headless=new")
     opts.add_argument("--no-sandbox")
     opts.add_argument("--disable-dev-shm-usage")
-    opts.add_argument("window-size=1200,800")
+    opts.add_argument("--disable-gpu")
+    opts.add_argument("--disable-extensions")
+    opts.add_argument("--disable-logging")
+    opts.add_argument("--disable-gpu-sandbox")
+    opts.add_argument("--silent")
+    opts.add_argument("--log-level=3")
+    opts.add_argument("--window-size=1200,800")
+    
+    # 로그 완전 차단
     opts.add_experimental_option("excludeSwitches", ["enable-logging"])
+    opts.add_experimental_option('useAutomationExtension', False)
+    opts.add_experimental_option("excludeSwitches", ["enable-automation"])
     
-    # 고성능 모드 설정
     if high_performance:
-        # 메모리/성능 최적화 설정
-        opts.add_argument("--js-flags=--expose-gc")
-        opts.add_argument("--disable-gpu")
-        opts.add_argument("--disable-extensions")
-        opts.add_argument("--disable-software-rasterizer")
-        opts.add_argument("--disable-features=site-per-process")
-        opts.add_argument("--disable-features=NetworkService")
-        opts.add_argument("--disable-features=IsolateOrigins")
+        # 성능 최적화 (필수만)
         opts.add_argument("--disable-blink-features=AutomationControlled")
-        opts.add_argument("--enable-javascript-harmony")
-        opts.add_argument("--disable-infobars")
-        opts.add_argument("--enable-precise-memory-info")
         opts.add_argument("--disable-default-apps")
-        
-        # 더 많은 메모리 사용 허용 (RAM 활용)
-        opts.add_argument("--memory-model=low")
-        opts.add_argument("--js-flags=--max-old-space-size=4096")
-        
-        # 하드웨어 가속 활성화 (vRAM 활용)
-        opts.add_argument("--enable-gpu-rasterization")
-        opts.add_argument("--enable-zero-copy")
+        opts.add_argument("--disable-background-timer-throttling")
+        opts.add_argument("--disable-renderer-backgrounding")
+        opts.add_argument("--disable-features=TranslateUI")
+        opts.add_argument("--disable-ipc-flooding-protection")
     
-    return webdriver.Chrome(service=Service(), options=opts)
+    # 로그 완전 차단을 위한 Service 설정
+    service = Service()
+    service.log_path = "NUL" if os.name == "nt" else "/dev/null"
+    
+    return webdriver.Chrome(service=service, options=opts)
 
 def get_server_name(server_num):
     """서버 번호를 서버 이름으로 변환"""
@@ -527,7 +528,9 @@ def fetch_rank_page_dom(driver, server_num, search_name="", div=1, high_performa
             if not driver.current_url.startswith(list_url):
                 driver.get(list_url)
                 wait.until(EC.presence_of_element_located((By.TAG_NAME, "body")))
-                time.sleep(1)  # 최소 대기시간
+                # 페이지 완전 로딩 대기
+                wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "input[name='search']")))
+                time.sleep(2)  # 페이지 완전 로딩 대기
             
             # 서버 선택 (server_num이 1이 아닌 경우만)
             if server_num != 1:  # 데이안이 기본값
@@ -536,8 +539,11 @@ def fetch_rank_page_dom(driver, server_num, search_name="", div=1, high_performa
             
             # 캐릭터 검색 (search_name이 있는 경우만)
             if search_name:
-                search_character_dom(driver, search_name)
-                time.sleep(1)  # 검색 결과 로딩 대기
+                search_success = search_character_dom(driver, search_name)
+                if not search_success:
+                    logger.error(f"캐릭터 검색 실패: {search_name}")
+                    raise Exception(f"캐릭터 검색 실패: {search_name}")
+                time.sleep(2)  # 검색 결과 로딩 대기 (조금 더 길게)
             
             # 랭킹 데이터 로딩 대기
             wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "ul.list, .no_data")))
@@ -546,7 +552,16 @@ def fetch_rank_page_dom(driver, server_num, search_name="", div=1, high_performa
             return driver.page_source, driver
             
         except Exception as e:
-            logger.debug(f"DOM 크롤링 실패: 서버 {server_name}, 검색어 '{search_name}', 시도 {attempts + 1}/{MAX_FETCH_RETRIES}. 오류: {e}")
+            logger.error(f"DOM 크롤링 실패: 서버 {server_name}, 검색어 '{search_name}', 시도 {attempts + 1}/{MAX_FETCH_RETRIES}. 오류: {e}")
+            # 더 자세한 오류 정보 출력
+            if attempts == 0:  # 첫 번째 실패시에만 상세 로그
+                try:
+                    current_url = driver.current_url if driver else "driver없음"
+                    logger.error(f"현재 URL: {current_url}")
+                    page_source_len = len(driver.page_source) if driver else 0
+                    logger.error(f"페이지 소스 길이: {page_source_len}")
+                except:
+                    logger.error("드라이버 상태 확인 불가")
             last_exception = e
             attempts += 1
             
@@ -595,12 +610,38 @@ def select_server_dom(driver, server_name):
 def search_character_dom(driver, character_name):
     """DOM 조작으로 캐릭터 검색 (최적화된 버전)"""
     try:
-        # JavaScript로 빠른 검색
+        # 먼저 요소 존재 확인 (여러 선택자 시도)
+        check_script = """
+        var input = document.querySelector('input[name="search"]') || 
+                   document.querySelector('input[type="text"]') ||
+                   document.querySelector('#search') ||
+                   document.querySelector('.search-input');
+        var button = document.querySelector('button[data-searchtype="search"]') || 
+                    document.querySelector('button[type="submit"]') ||
+                    document.querySelector('.search-btn') ||
+                    document.querySelector('#searchBtn');
+        return {
+            hasInput: !!input,
+            hasButton: !!button,
+            inputValue: input ? input.value : null,
+            inputSelector: input ? input.outerHTML.substring(0, 100) : null,
+            buttonSelector: button ? button.outerHTML.substring(0, 100) : null
+        };
+        """
+        element_check = driver.execute_script(check_script)
+        logger.debug(f"검색 요소 확인: {element_check}")
+        
+        if not element_check.get('hasInput') or not element_check.get('hasButton'):
+            logger.error(f"검색 요소 없음: input={element_check.get('hasInput')}, button={element_check.get('hasButton')}")
+            return False
+        
+        # JavaScript로 빠른 검색 (특수문자 이스케이프)
+        escaped_name = character_name.replace("'", "\\'").replace('"', '\\"')
         script = f"""
         var input = document.querySelector('input[name="search"]');
         var button = document.querySelector('button[data-searchtype="search"]');
         if (input && button) {{
-            input.value = '{character_name}';
+            input.value = '{escaped_name}';
             button.click();
             return true;
         }}
@@ -609,8 +650,13 @@ def search_character_dom(driver, character_name):
         result = driver.execute_script(script)
         if result:
             logger.debug(f"캐릭터 검색 완료: {character_name}")
+            return True
+        else:
+            logger.error(f"JavaScript 검색 실행 실패: {character_name}")
+            return False
     except Exception as e:
-        logger.warning(f"캐릭터 검색 실패: {e}")
+        logger.error(f"캐릭터 검색 실패: {character_name}, 오류: {e}")
+        return False
 
 def navigate_to_page_dom(driver, page_number):
     """JavaScript 기반 페이지 이동 (고속 처리)"""

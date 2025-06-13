@@ -80,29 +80,32 @@ class ChromeDriverPool:
                 raise RuntimeError("chromedriver 설치 실패: 경로 없음")
 
         opts = Options()
+        
+        # 필수 옵션만 사용
         opts.add_argument("--headless=new")
         opts.add_argument("--no-sandbox")
         opts.add_argument("--disable-dev-shm-usage")
         opts.add_argument("--disable-gpu")
-        opts.add_argument("--disable-web-security")
-        opts.add_argument("--disable-features=VizDisplayCompositor")
-        opts.add_argument("window-size=1200,800")
-        opts.add_argument("--disable-blink-features=AutomationControlled")
         opts.add_argument("--disable-extensions")
-        opts.add_argument("--disable-plugins")
-        opts.add_argument("--disable-images")  # 이미지 로딩 비활성화로 속도 향상
-        # 브라우저 프로세스 고아(orphaned) 방지
-        opts.add_argument("--disable-features=site-per-process")
-        opts.add_experimental_option("detach", False)
+        opts.add_argument("--disable-logging")
+        opts.add_argument("--disable-gpu-sandbox")
+        opts.add_argument("--silent")
+        opts.add_argument("--log-level=3")
+        opts.add_argument("--window-size=1200,800")
+        opts.add_argument("--disable-blink-features=AutomationControlled")
+        opts.add_argument("--disable-images")  # 속도 향상
+        
+        # 로그 완전 차단
         opts.add_experimental_option("excludeSwitches", ["enable-logging", "enable-automation"])
         opts.add_experimental_option('useAutomationExtension', False)
+        opts.add_experimental_option("detach", False)
         
-        # User-Agent 설정 (DOM 조작 안정성)
+        # User-Agent 설정
         opts.add_argument('--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
         
-        # 서비스 타임아웃 증가
+        # 로그 완전 차단을 위한 Service 설정
         service = Service(executable_path=_chromedriver_path)
-        service.service_args = ['--verbose', '--log-path=chromedriver.log']
+        service.log_path = "NUL" if os.name == "nt" else "/dev/null"
         
         driver = webdriver.Chrome(service=service, options=opts)
         
