@@ -646,61 +646,119 @@ def get_pagination_info_dom(driver):
         logger.warning(f"페이지네이션 정보 추출 실패: {e}")
         return {"totalCount": 0, "currentRange": "", "currentPage": 1}
 
-def crawl_all_pages_dom(driver, server_num, max_pages=50):
-    """모든 페이지를 DOM 조작으로 순차 크롤링 (고속 처리)"""
+def crawl_by_character_search_dom(driver, server_num, character_list, div=1):
+    """캐릭터 검색 기반 순차 크롤링 (중복 제거 방식)"""
     server_name = get_server_name(server_num)
     all_data = []
+    processed_characters = set()  # 중복 제거용
+    
+    logger.info(f"서버 {server_name} 캐릭터 검색 기반 크롤링 시작: {len(character_list)}개 캐릭터")
     
     try:
-        # 첫 페이지 설정
-        if not fetch_rank_page_dom(driver, server_num, "", 1)[0]:
-            logger.error(f"서버 {server_name} 첫 페이지 로딩 실패")
-            return []
-        
-        # 페이지네이션 정보 확인
-        pagination_info = get_pagination_info_dom(driver)
-        total_count = pagination_info.get("totalCount", 0)
-        max_possible_pages = min(max_pages, (total_count + 19) // 20)  # 페이지당 20개
-        
-        logger.info(f"서버 {server_name} 전체 크롤링 시작: 총 {total_count}개, 최대 {max_possible_pages}페이지")
-        
-        for page in range(1, max_possible_pages + 1):
+        for idx, character_name in enumerate(character_list):
             try:
-                # 첫 페이지가 아니면 페이지 이동
-                if page > 1:
-                    if not navigate_to_page_dom(driver, page):
-                        logger.warning(f"서버 {server_name} 페이지 {page} 이동 실패")
-                        continue
+                # 이미 처리된 캐릭터는 스킵
+                if character_name in processed_characters:
+                    continue
                 
-                # 현재 페이지 데이터 가져오기
-                page_source, _ = fetch_rank_page_dom(driver, server_num, "", 1)
+                # 캐릭터 검색으로 20개 랭킹 데이터 가져오기
+                page_source, _ = fetch_rank_page_dom(driver, server_num, character_name, div)
                 if page_source:
                     page_data = parse_rank_html(page_source)
-                    all_data.extend(page_data)
-                    logger.debug(f"서버 {server_name} 페이지 {page}: {len(page_data)}개 수집")
+                    
+                    # 중복 제거하면서 데이터 추가
+                    new_characters = 0
+                    for item in page_data:
+                        char_name = item.get('character', '')
+                        if char_name and char_name not in processed_characters:
+                            all_data.append(item)
+                            processed_characters.add(char_name)
+                            new_characters += 1
+                    
+                    logger.debug(f"서버 {server_name} [{idx+1}/{len(character_list)}] '{character_name}' 검색: {len(page_data)}개 수집, {new_characters}개 신규")
+                    
+                    # 진행률 로깅 (100개마다)
+                    if (idx + 1) % 100 == 0:
+                        logger.info(f"서버 {server_name} 진행률: {idx+1}/{len(character_list)} ({((idx+1)/len(character_list)*100):.1f}%), 총 수집: {len(all_data)}개")
                 else:
-                    logger.warning(f"서버 {server_name} 페이지 {page} 데이터 없음")
+                    logger.warning(f"서버 {server_name} 캐릭터 '{character_name}' 검색 실패")
                 
                 # 빠른 처리를 위한 최소 대기
-                time.sleep(0.3)
+                time.sleep(0.2)
                 
             except Exception as e:
-                logger.error(f"서버 {server_name} 페이지 {page} 처리 오류: {e}")
+                logger.error(f"서버 {server_name} 캐릭터 '{character_name}' 처리 오류: {e}")
                 continue
         
-        logger.info(f"서버 {server_name} 전체 크롤링 완료: {len(all_data)}개 수집")
+        logger.info(f"서버 {server_name} 캐릭터 검색 크롤링 완료: {len(all_data)}개 수집 (중복 제거됨)")
         return all_data
         
     except Exception as e:
-        logger.error(f"서버 {server_name} 전체 크롤링 실패: {e}")
+        logger.error(f"서버 {server_name} 캐릭터 검색 크롤링 실패: {e}")
         return all_data
 
+def get_character_list_from_db(server_name, exclude_recent_hours=1):
+    """DB에서 해당 서버의 캐릭터 목록 가져오기 (최근 업데이트된 캐릭터 제외)"""
+    from service.db_session import SessionLocal, get_current_time
+    from sqlalchemy import text
+    from datetime import timedelta
+    
+    try:
+        db = SessionLocal()
+        
+        # 현재 시간에서 지정된 시간을 뺀 시점 (KST 기준)
+        cutoff_time = get_current_time() - timedelta(hours=exclude_recent_hours)
+        
+        query = text("""
+            SELECT DISTINCT character_name 
+            FROM mabinogi_ranking 
+            WHERE server_name = :server_name 
+            AND (retrieved_at < :cutoff_time OR retrieved_at IS NULL)
+            ORDER BY character_name
+        """)
+        result = db.execute(query, {
+            'server_name': server_name,
+            'cutoff_time': cutoff_time
+        }).fetchall()
+        character_list = [row[0] for row in result]
+        db.close()
+        
+        logger.info(f"서버 {server_name}의 DB 캐릭터 목록: {len(character_list)}개 (최근 {exclude_recent_hours}시간 내 업데이트 제외)")
+        return character_list
+        
+    except Exception as e:
+        logger.error(f"서버 {server_name} 캐릭터 목록 조회 실패: {e}")
+        return []
+
+def generate_character_search_sequence(server_name, exclude_recent_hours=1):
+    """캐릭터 검색 순서 생성 (DB + 추가 패턴, 최근 업데이트된 캐릭터 제외)"""
+    # DB에서 기존 캐릭터 목록 (최근 업데이트된 캐릭터 제외)
+    db_characters = get_character_list_from_db(server_name, exclude_recent_hours)
+    
+    # 한글 패턴 추가 (ㄱ-ㅎ, ㅏ-ㅣ 등)
+    korean_patterns = []
+    for i in range(ord('가'), ord('힣'), 100):  # 한글 유니코드 범위에서 100개씩 건너뛰며
+        korean_patterns.append(chr(i))
+    
+    # 영문 패턴 추가
+    english_patterns = [chr(i) for i in range(ord('a'), ord('z')+1)]
+    english_patterns.extend([chr(i) for i in range(ord('A'), ord('Z')+1)])
+    
+    # 숫자 패턴 추가
+    number_patterns = [str(i) for i in range(10)]
+    
+    # 전체 검색 패턴 조합
+    all_patterns = db_characters + korean_patterns + english_patterns + number_patterns
+    
+    logger.info(f"서버 {server_name} 검색 패턴 생성: DB {len(db_characters)}개 (최근 {exclude_recent_hours}시간 내 업데이트 제외) + 패턴 {len(korean_patterns + english_patterns + number_patterns)}개")
+    return all_patterns
+
 def fast_sequential_crawl_worker(server_num, div=1):
-    """고속 DOM 조작 기반 순차 크롤링 워커 (새로운 방식)"""
+    """고속 DOM 조작 기반 순차 크롤링 워커 (캐릭터 검색 기반 중복제거 방식)"""
     server_name = get_server_name(server_num)
     thread_name = f"고속크롤러_{server_name}"
     
-    logger.info(f"서버 {server_name} 고속 DOM 크롤링 시작")
+    logger.info(f"서버 {server_name} 고속 DOM 크롤링 시작 (캐릭터 검색 기반)")
     
     try:
         # 고성능 드라이버 생성
@@ -709,8 +767,12 @@ def fast_sequential_crawl_worker(server_num, div=1):
         # 데이터 수집기 초기화 (큰 배치 크기로 고속 처리)
         collector = DataCollector(batch_size=5000, div=div, server_name=server_name)
         
-        # 모든 페이지 크롤링
-        all_data = crawl_all_pages_dom(driver, server_num, max_pages=100)
+        # 캐릭터 검색 순서 생성 (DB + 추가 패턴, 최근 1시간 내 업데이트된 캐릭터 제외)
+        character_list = generate_character_search_sequence(server_name, exclude_recent_hours=1)
+        logger.info(f"서버 {server_name} 캐릭터 검색 대상: {len(character_list)}개 (최근 업데이트 제외)")
+        
+        # 캐릭터 검색 기반 크롤링 (중복 제거)
+        all_data = crawl_by_character_search_dom(driver, server_num, character_list, div)
         
         # 데이터 저장
         if all_data:
