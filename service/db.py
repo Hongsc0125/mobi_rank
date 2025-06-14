@@ -76,12 +76,13 @@ def has_recent_data(server, character=None, div=1):
     finally:
         db.close()
 
-def insert_data(data, server=None, character=None, div=1, retrieved_at_kst=None): 
+def insert_data(data, server=None, character=None, div=1, retrieved_at_kst=None, force_update=False): 
     # logger.info(f"retrieved_at_kst: {retrieved_at_kst}")
-    recent_data = has_recent_data(server, character, div)
-    if recent_data:
-        #logger.info("Recent data found, skipping database update")
-        return {"success": True, "rows_affected": 0, "data": recent_data, "from_cache": True}
+    if not force_update:
+        recent_data = has_recent_data(server, character, div)
+        if recent_data:
+            #logger.info("Recent data found, skipping database update")
+            return {"success": True, "rows_affected": 0, "data": recent_data, "from_cache": True}
     
     # If no recent data, proceed with insert/update
     db = SessionLocal()

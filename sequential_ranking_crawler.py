@@ -804,8 +804,8 @@ def fast_sequential_crawl_worker(server_num, div=1):
                     parsed_data = parse_rank_html(html_data)
                     if parsed_data:
                         logger.info(f"서버 {server_name} '{character_name}' 파싱 성공: {len(parsed_data)}개 아이템")
-                        # DB 저장 (server.py와 동일)
-                        result = insert_data(parsed_data, server=server_name, div=div)
+                        # DB 저장 (캐시 무시하고 강제 업데이트)
+                        result = insert_data(parsed_data, server=server_name, div=div, force_update=True)
                         logger.info(f"서버 {server_name} '{character_name}' insert_data 결과: {result}")
                         if result.get('success', False):
                             success_count += 1
