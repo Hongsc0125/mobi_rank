@@ -747,28 +747,13 @@ def get_character_list_from_db(server_name, exclude_recent_hours=1):
         logger.error(f"서버 {server_name} 캐릭터 목록 조회 실패: {e}")
         return []
 
-def generate_character_search_sequence(server_name, exclude_recent_hours=1):
-    """캐릭터 검색 순서 생성 (DB + 추가 패턴, 최근 업데이트된 캐릭터 제외)"""
-    # DB에서 기존 캐릭터 목록 (최근 업데이트된 캐릭터 제외)
+def get_characters_to_update(server_name, exclude_recent_hours=1):
+    """업데이트가 필요한 캐릭터 목록 조회 (DB 캐릭터만, 패턴 제외)"""
+    # DB에서 기존 캐릭터 목록만 (최근 업데이트된 캐릭터 제외)
     db_characters = get_character_list_from_db(server_name, exclude_recent_hours)
     
-    # 한글 패턴 추가 (ㄱ-ㅎ, ㅏ-ㅣ 등)
-    korean_patterns = []
-    for i in range(ord('가'), ord('힣'), 100):  # 한글 유니코드 범위에서 100개씩 건너뛰며
-        korean_patterns.append(chr(i))
-    
-    # 영문 패턴 추가
-    english_patterns = [chr(i) for i in range(ord('a'), ord('z')+1)]
-    english_patterns.extend([chr(i) for i in range(ord('A'), ord('Z')+1)])
-    
-    # 숫자 패턴 추가
-    number_patterns = [str(i) for i in range(10)]
-    
-    # 전체 검색 패턴 조합
-    all_patterns = db_characters + korean_patterns + english_patterns + number_patterns
-    
-    logger.info(f"서버 {server_name} 검색 패턴 생성: DB {len(db_characters)}개 (최근 {exclude_recent_hours}시간 내 업데이트 제외) + 패턴 {len(korean_patterns + english_patterns + number_patterns)}개")
-    return all_patterns
+    logger.info(f"서버 {server_name} 업데이트 대상 캐릭터: {len(db_characters)}개 (최근 {exclude_recent_hours}시간 내 업데이트 제외)")
+    return db_characters
 
 def fast_sequential_crawl_worker(server_num, div=1):
     """고속 DOM 조작 기반 순차 크롤링 워커 (service/full_data.py 방식 사용)"""
@@ -782,63 +767,76 @@ def fast_sequential_crawl_worker(server_num, div=1):
         from service.full_data import fetch_rank_via_dom, parse_rank_html
         from service.db import insert_data
         
-        # 캐릭터 검색 순서 생성 (DB + 추가 패턴, 최근 1시간 내 업데이트된 캐릭터 제외)
-        character_list = generate_character_search_sequence(server_name, exclude_recent_hours=1)
-        logger.info(f"서버 {server_name} 캐릭터 검색 대상: {len(character_list)}개 (최근 업데이트 제외)")
+        # 순환 크롤링: 캐릭터 리스트 완료 후 다시 DB 조회
+        cycle_count = 0
+        total_success = 0
         
-        # server.py와 동일한 방식으로 안전하게 크롤링
-        all_data = []
-        success_count = 0
-        fail_count = 0
-        
-        for idx, character_name in enumerate(character_list):
-            try:
-                logger.info(f"서버 {server_name} [{idx+1}/{len(character_list)}] '{character_name}' 검색 중...")
-                
-                # service/full_data.py의 검증된 함수 사용 (server.py와 완전 동일)
-                html_data = fetch_rank_via_dom(server=server_name, name=character_name, rank_type=div)
-                
-                if html_data:
-                    logger.info(f"서버 {server_name} '{character_name}' HTML 데이터 획득 성공")
-                    # HTML 파싱
-                    parsed_data = parse_rank_html(html_data)
-                    if parsed_data:
-                        logger.info(f"서버 {server_name} '{character_name}' 파싱 성공: {len(parsed_data)}개 아이템")
-                        # DB 저장 (캐시 무시하고 강제 업데이트)
-                        result = insert_data(parsed_data, server=server_name, div=div, force_update=True)
-                        logger.info(f"서버 {server_name} '{character_name}' insert_data 결과: {result}")
-                        if result.get('success', False):
-                            success_count += 1
-                            all_data.extend(parsed_data)
-                            logger.info(f"서버 {server_name} '{character_name}' 성공: {len(parsed_data)}개 저장")
-                        else:
-                            fail_count += 1
-                            logger.warning(f"서버 {server_name} '{character_name}' 저장 실패: {result}")
-                    else:
-                        fail_count += 1
-                        logger.warning(f"서버 {server_name} '{character_name}' 파싱 결과 없음")
-                else:
-                    fail_count += 1
-                    logger.warning(f"서버 {server_name} '{character_name}' HTML 데이터 없음")
-                    
-                # 진행률 로깅 (100개마다)
-                if (idx + 1) % 100 == 0:
-                    logger.info(f"서버 {server_name} 진행률: {idx+1}/{len(character_list)} ({((idx+1)/len(character_list)*100):.1f}%), 성공: {success_count}, 실패: {fail_count}")
-                
-                # Chrome 안정성을 위한 대기
-                time.sleep(0.3)
-                
-            except Exception as e:
-                fail_count += 1
-                logger.error(f"서버 {server_name} '{character_name}' 처리 오류: {e}")
-                time.sleep(1)
+        while True:
+            cycle_count += 1
+            logger.info(f"서버 {server_name} 크롤링 사이클 #{cycle_count} 시작")
+            
+            # 현재 업데이트가 필요한 캐릭터 목록 조회
+            character_list = get_characters_to_update(server_name, exclude_recent_hours=1)
+            
+            if not character_list:
+                logger.info(f"서버 {server_name} 업데이트 필요한 캐릭터 없음, 1시간 대기 후 재조회")
+                time.sleep(3600)  # 1시간 대기
                 continue
-        
-        logger.info(f"서버 {server_name} 크롤링 완료: 성공 {success_count}회, 실패 {fail_count}회, 총 데이터 {len(all_data)}개")
-        logger.info(f"서버 {server_name} 고속 크롤링 완료")
+            
+            # 현재 사이클 크롤링 시작
+            cycle_success = 0
+            cycle_fail = 0
+            
+            for idx, character_name in enumerate(character_list):
+                try:
+                    logger.info(f"서버 {server_name} 사이클#{cycle_count} [{idx+1}/{len(character_list)}] '{character_name}' 검색 중...")
+                    
+                    # service/full_data.py의 검증된 함수 사용 (server.py와 완전 동일)
+                    html_data = fetch_rank_via_dom(server=server_name, name=character_name, rank_type=div)
+                    
+                    if html_data:
+                        logger.debug(f"서버 {server_name} '{character_name}' HTML 데이터 획득 성공")
+                        # HTML 파싱
+                        parsed_data = parse_rank_html(html_data)
+                        if parsed_data:
+                            logger.debug(f"서버 {server_name} '{character_name}' 파싱 성공: {len(parsed_data)}개 아이템")
+                            # DB 저장 (캐시 무시하고 강제 업데이트)
+                            result = insert_data(parsed_data, server=server_name, div=div, force_update=True)
+                            if result.get('success', False) and result.get('rows_affected', 0) > 0:
+                                cycle_success += 1
+                                total_success += 1
+                                logger.debug(f"서버 {server_name} '{character_name}' 성공: {len(parsed_data)}개 저장")
+                            else:
+                                cycle_fail += 1
+                                logger.warning(f"서버 {server_name} '{character_name}' 저장 실패")
+                        else:
+                            cycle_fail += 1
+                            logger.warning(f"서버 {server_name} '{character_name}' 파싱 결과 없음")
+                    else:
+                        cycle_fail += 1
+                        logger.warning(f"서버 {server_name} '{character_name}' HTML 데이터 없음")
+                        
+                    # 진행률 로깅 (100개마다)
+                    if (idx + 1) % 100 == 0:
+                        logger.info(f"서버 {server_name} 사이클#{cycle_count} 진행률: {idx+1}/{len(character_list)} ({((idx+1)/len(character_list)*100):.1f}%), 성공: {cycle_success}, 실패: {cycle_fail}")
+                    
+                    # Chrome 안정성을 위한 대기
+                    time.sleep(0.3)
+                    
+                except Exception as e:
+                    cycle_fail += 1
+                    logger.error(f"서버 {server_name} '{character_name}' 처리 오류: {e}")
+                    time.sleep(1)
+                    continue
+            
+            # 사이클 완료
+            logger.info(f"서버 {server_name} 사이클#{cycle_count} 완료: 성공 {cycle_success}회, 실패 {cycle_fail}회 (총 누적: {total_success}회)")
+            
+            # 다음 사이클 전 짧은 대기
+            time.sleep(10)
         
     except Exception as e:
-        logger.error(f"서버 {server_name} 고속 크롤링 실패: {e}")
+        logger.error(f"서버 {server_name} 순환 크롤링 실패: {e}")
         # service/full_data.py는 자체적으로 드라이버 관리하므로 별도 정리 불필요
 
 def fetch_rank_page(driver, server_num, search_name="", div=1, high_performance_driver=True):
