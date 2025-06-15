@@ -775,18 +775,17 @@ def fast_sequential_crawl_worker(server_num, div=1):
         driver_pool = get_driver_pool()
         driver = driver_pool.get_driver(timeout=30)
         
-        try:
-            # 랭킹 페이지로 이동 (한 번만)
-            list_url = f"https://mabinogimobile.nexon.com/Ranking/List?t={div}"
-            driver.get(list_url)
-            wait = WebDriverWait(driver, 20)
-            wait.until(EC.presence_of_element_located((By.TAG_NAME, "body")))
-            time.sleep(2)
-            
-            # 서버 선택 (한 번만)
-            select_server_option(driver, server_name)
-            time.sleep(2)
-            logger.info(f"서버 {server_name} 전용 드라이버 및 페이지 준비 완료")
+        # 랭킹 페이지로 이동 (한 번만)
+        list_url = f"https://mabinogimobile.nexon.com/Ranking/List?t={div}"
+        driver.get(list_url)
+        wait = WebDriverWait(driver, 20)
+        wait.until(EC.presence_of_element_located((By.TAG_NAME, "body")))
+        time.sleep(2)
+        
+        # 서버 선택 (한 번만)
+        select_server_option(driver, server_name)
+        time.sleep(2)
+        logger.info(f"서버 {server_name} 전용 드라이버 및 페이지 준비 완료")
         
         # 순환 크롤링: 캐릭터 리스트 완료 후 다시 DB 조회
         cycle_count = 0
@@ -865,14 +864,11 @@ def fast_sequential_crawl_worker(server_num, div=1):
             
             # 다음 사이클 전 짧은 대기
             time.sleep(10)
-        
-        finally:
-            # 전용 드라이버 반환
-            if driver:
-                driver_pool.release_driver(driver)
                 
     except Exception as e:
         logger.error(f"서버 {server_name} 순환 크롤링 실패: {e}")
+    finally:
+        # 전용 드라이버 반환
         if 'driver' in locals() and driver:
             try:
                 driver_pool.release_driver(driver)
