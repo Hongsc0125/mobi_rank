@@ -764,8 +764,29 @@ def fast_sequential_crawl_worker(server_num, div=1):
     
     try:
         # service/full_data.py와 동일한 방식 사용 (server.py와 완전 동일)
-        from service.full_data import fetch_rank_via_dom, parse_rank_html
+        from service.full_data import parse_rank_html, select_server_option, search_character
         from service.db import insert_data
+        from service.driver_pool import get_driver_pool
+        from selenium.webdriver.common.by import By
+        from selenium.webdriver.support.ui import WebDriverWait
+        from selenium.webdriver.support import expected_conditions as EC
+        
+        # 전용 드라이버 획득 (재사용)
+        driver_pool = get_driver_pool()
+        driver = driver_pool.get_driver(timeout=30)
+        
+        try:
+            # 랭킹 페이지로 이동 (한 번만)
+            list_url = f"https://mabinogimobile.nexon.com/Ranking/List?t={div}"
+            driver.get(list_url)
+            wait = WebDriverWait(driver, 20)
+            wait.until(EC.presence_of_element_located((By.TAG_NAME, "body")))
+            time.sleep(2)
+            
+            # 서버 선택 (한 번만)
+            select_server_option(driver, server_name)
+            time.sleep(2)
+            logger.info(f"서버 {server_name} 전용 드라이버 및 페이지 준비 완료")
         
         # 순환 크롤링: 캐릭터 리스트 완료 후 다시 DB 조회
         cycle_count = 0
@@ -783,51 +804,61 @@ def fast_sequential_crawl_worker(server_num, div=1):
                 time.sleep(3600)  # 1시간 대기
                 continue
             
-            # 현재 사이클 크롤링 시작
+            # 현재 사이클 크롤링 시작 (배치 처리)
             cycle_success = 0
             cycle_fail = 0
+            batch_size = 50  # 50개씩 배치로 처리
             
-            for idx, character_name in enumerate(character_list):
-                try:
-                    logger.info(f"서버 {server_name} 사이클#{cycle_count} [{idx+1}/{len(character_list)}] '{character_name}' 검색 중...")
-                    
-                    # service/full_data.py의 검증된 함수 사용 (server.py와 완전 동일)
-                    html_data = fetch_rank_via_dom(server=server_name, name=character_name, rank_type=div)
-                    
-                    if html_data:
-                        logger.debug(f"서버 {server_name} '{character_name}' HTML 데이터 획득 성공")
-                        # HTML 파싱
-                        parsed_data = parse_rank_html(html_data)
-                        if parsed_data:
-                            logger.debug(f"서버 {server_name} '{character_name}' 파싱 성공: {len(parsed_data)}개 아이템")
-                            # DB 저장 (캐시 무시하고 강제 업데이트)
-                            result = insert_data(parsed_data, server=server_name, div=div, force_update=True)
-                            if result.get('success', False) and result.get('rows_affected', 0) > 0:
-                                cycle_success += 1
-                                total_success += 1
-                                logger.debug(f"서버 {server_name} '{character_name}' 성공: {len(parsed_data)}개 저장")
+            for batch_start in range(0, len(character_list), batch_size):
+                batch_end = min(batch_start + batch_size, len(character_list))
+                batch_characters = character_list[batch_start:batch_end]
+                
+                logger.info(f"서버 {server_name} 사이클#{cycle_count} 배치 [{batch_start+1}-{batch_end}/{len(character_list)}] 처리 시작")
+                
+                # 배치 내 캐릭터들 빠르게 처리 (전용 드라이버 재사용)
+                for idx, character_name in enumerate(batch_characters):
+                    try:
+                        # 고속 검색: 같은 드라이버에서 계속 검색만 변경
+                        search_character(driver, character_name)
+                        time.sleep(1.5)  # 검색 결과 로딩 대기
+                        
+                        # 결과 확인
+                        wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "div[data-mm-rankinglist], ul.list")))
+                        time.sleep(1)
+                        
+                        html_data = driver.page_source
+                        
+                        if html_data:
+                            # HTML 파싱
+                            parsed_data = parse_rank_html(html_data)
+                            if parsed_data:
+                                # DB 저장 (캐시 무시하고 강제 업데이트)
+                                result = insert_data(parsed_data, server=server_name, div=div, force_update=True)
+                                if result.get('success', False) and result.get('rows_affected', 0) > 0:
+                                    cycle_success += 1
+                                    total_success += 1
+                                else:
+                                    cycle_fail += 1
                             else:
                                 cycle_fail += 1
-                                logger.warning(f"서버 {server_name} '{character_name}' 저장 실패")
                         else:
                             cycle_fail += 1
-                            logger.warning(f"서버 {server_name} '{character_name}' 파싱 결과 없음")
-                    else:
-                        cycle_fail += 1
-                        logger.warning(f"서버 {server_name} '{character_name}' HTML 데이터 없음")
+                            
+                        # 매우 짧은 대기 (거의 없음)
+                        time.sleep(0.05)
                         
-                    # 진행률 로깅 (100개마다)
-                    if (idx + 1) % 100 == 0:
-                        logger.info(f"서버 {server_name} 사이클#{cycle_count} 진행률: {idx+1}/{len(character_list)} ({((idx+1)/len(character_list)*100):.1f}%), 성공: {cycle_success}, 실패: {cycle_fail}")
-                    
-                    # Chrome 안정성을 위한 대기
-                    time.sleep(0.3)
-                    
-                except Exception as e:
-                    cycle_fail += 1
-                    logger.error(f"서버 {server_name} '{character_name}' 처리 오류: {e}")
-                    time.sleep(1)
-                    continue
+                    except Exception as e:
+                        cycle_fail += 1
+                        logger.warning(f"서버 {server_name} '{character_name}' 처리 오류: {str(e)[:50]}...")
+                        time.sleep(0.1)
+                        continue
+                
+                # 배치 완료 로깅
+                batch_success_rate = (cycle_success / (batch_end)) * 100 if batch_end > 0 else 0
+                logger.info(f"서버 {server_name} 사이클#{cycle_count} 배치 완료: {batch_end}/{len(character_list)} ({(batch_end/len(character_list)*100):.1f}%), 성공률: {batch_success_rate:.1f}%")
+                
+                # 배치 간 짧은 휴식
+                time.sleep(0.5)
             
             # 사이클 완료
             logger.info(f"서버 {server_name} 사이클#{cycle_count} 완료: 성공 {cycle_success}회, 실패 {cycle_fail}회 (총 누적: {total_success}회)")
@@ -835,9 +866,18 @@ def fast_sequential_crawl_worker(server_num, div=1):
             # 다음 사이클 전 짧은 대기
             time.sleep(10)
         
+        finally:
+            # 전용 드라이버 반환
+            if driver:
+                driver_pool.release_driver(driver)
+                
     except Exception as e:
         logger.error(f"서버 {server_name} 순환 크롤링 실패: {e}")
-        # service/full_data.py는 자체적으로 드라이버 관리하므로 별도 정리 불필요
+        if 'driver' in locals() and driver:
+            try:
+                driver_pool.release_driver(driver)
+            except:
+                pass
 
 def fetch_rank_page(driver, server_num, search_name="", div=1, high_performance_driver=True):
     """DOM 조작 기반으로 랭킹 데이터 가져오기 - 기존 함수명 호환성 유지"""
