@@ -97,7 +97,13 @@ class ChromeDriverPool:
         opts.add_argument("--disable-web-security")
         opts.add_argument("--disable-features=TranslateUI")
         opts.add_argument("--disable-ipc-flooding-protection")
-        opts.add_argument("--max_old_space_size=4096")
+        
+        # 메모리 누수 방지 옵션 (기능은 유지)
+        opts.add_argument("--max_old_space_size=4096")  # 기존 4GB 유지
+        opts.add_argument("--memory-pressure-off")
+        opts.add_argument("--disable-background-timer-throttling")
+        opts.add_argument("--disable-renderer-backgrounding")
+        opts.add_argument("--disable-backgrounding-occluded-windows")
         
         # 로그 완전 차단
         opts.add_experimental_option("excludeSwitches", ["enable-logging", "enable-automation"])
@@ -215,20 +221,50 @@ class ChromeDriverPool:
     
     def _health_check(self):
         """정기적으로 드라이버 상태 체크 및 필요시 재생성"""
+        refresh_cycle = 0
         while True:
             try:
                 time.sleep(60)  # 1분마다 체크
-                # logger.info(f"[{get_current_time().strftime('%Y-%m-%d %H:%M:%S KST')}] 크롬 드라이버 상태 체크 시작")
+                refresh_cycle += 1
                 
                 with self.lock:
-                    # 사용 중인 드라이버 체크
                     current_time = get_current_time()
                     
-                    # 30분 이상 사용 중인 드라이버는 종료 예약
+                    # 15분마다 주기적으로 모든 드라이버 새로고침 (메모리 누수 방지)
+                    if refresh_cycle >= 15:  # 15분마다 새로고침
+                        logger.info(f"[{current_time.strftime('%Y-%m-%d %H:%M:%S KST')}] 드라이버 주기적 새로고침 시작")
+                        refresh_cycle = 0
+                        
+                        # 모든 드라이버 새로고침
+                        old_drivers = []
+                        while not self.driver_queue.empty():
+                            try:
+                                old_driver = self.driver_queue.get_nowait()
+                                old_drivers.append(old_driver)
+                            except:
+                                break
+                        
+                        # 기존 드라이버 정리
+                        for driver in old_drivers:
+                            self._quit_driver(driver)
+                        
+                        # 새 드라이버 생성
+                        for _ in range(self.pool_size):
+                            try:
+                                new_driver = self._create_new_driver()
+                                self.driver_queue.put_nowait(new_driver)
+                            except Exception as e:
+                                logger.error(f"주기적 새로고침 중 드라이버 생성 실패: {e}")
+                        
+                        logger.info(f"[{current_time.strftime('%Y-%m-%d %H:%M:%S KST')}] 드라이버 주기적 새로고침 완료")
+                        continue
+                    
+                    # 사용 중인 드라이버 체크
+                    # 20분 이상 사용 중인 드라이버는 종료 예약 (30분에서 20분으로 단축)
                     stale_drivers = []
                     for driver, last_used in self.in_use.items():
-                        if current_time - last_used > timedelta(minutes=30):
-                            # logger.warning(f"[{current_time.strftime('%Y-%m-%d %H:%M:%S KST')}] 오래된 드라이버 감지 (30분 이상 사용)")
+                        if current_time - last_used > timedelta(minutes=20):
+                            logger.warning(f"[{current_time.strftime('%Y-%m-%d %H:%M:%S KST')}] 오래된 드라이버 감지 (20분 이상 사용)")
                             stale_drivers.append(driver)
                     
                     # 오래된 드라이버 정리
@@ -264,5 +300,5 @@ def get_driver_pool():
     """드라이버 풀 싱글톤 인스턴스 반환"""
     global _driver_pool
     if _driver_pool is None:
-        _driver_pool = ChromeDriverPool(pool_size=2)  # 순차 처리용 최소 드라이버
+        _driver_pool = ChromeDriverPool(pool_size=2)  # 기존 2개 유지
     return _driver_pool
