@@ -230,12 +230,12 @@ class ChromeDriverPool:
                 with self.lock:
                     current_time = get_current_time()
                     
-                    # 15분마다 주기적으로 모든 드라이버 새로고침 (메모리 누수 방지)
-                    if refresh_cycle >= 15:  # 15분마다 새로고침
-                        logger.info(f"[{current_time.strftime('%Y-%m-%d %H:%M:%S KST')}] 드라이버 주기적 새로고침 시작")
+                    # 30분마다 유휴 드라이버만 새로고침 (사용 중인 드라이버는 보호)
+                    if refresh_cycle >= 30:  # 30분마다 새로고침
+                        logger.info(f"[{current_time.strftime('%Y-%m-%d %H:%M:%S KST')}] 유휴 드라이버 새로고침 시작")
                         refresh_cycle = 0
                         
-                        # 모든 드라이버 새로고침
+                        # 유휴 드라이버만 새로고침 (사용 중인 드라이버는 건드리지 않음)
                         old_drivers = []
                         while not self.driver_queue.empty():
                             try:
@@ -244,7 +244,7 @@ class ChromeDriverPool:
                             except:
                                 break
                         
-                        # 기존 드라이버 정리
+                        # 기존 유휴 드라이버 정리
                         for driver in old_drivers:
                             self._quit_driver(driver)
                         
@@ -254,9 +254,9 @@ class ChromeDriverPool:
                                 new_driver = self._create_new_driver()
                                 self.driver_queue.put_nowait(new_driver)
                             except Exception as e:
-                                logger.error(f"주기적 새로고침 중 드라이버 생성 실패: {e}")
+                                logger.error(f"유휴 드라이버 새로고침 중 생성 실패: {e}")
                         
-                        logger.info(f"[{current_time.strftime('%Y-%m-%d %H:%M:%S KST')}] 드라이버 주기적 새로고침 완료")
+                        logger.info(f"[{current_time.strftime('%Y-%m-%d %H:%M:%S KST')}] 유휴 드라이버 새로고침 완료")
                         continue
                     
                     # 사용 중인 드라이버 체크
