@@ -221,43 +221,15 @@ class ChromeDriverPool:
     
     def _health_check(self):
         """정기적으로 드라이버 상태 체크 및 필요시 재생성"""
-        refresh_cycle = 0
         while True:
             try:
                 time.sleep(60)  # 1분마다 체크
-                refresh_cycle += 1
                 
                 with self.lock:
                     current_time = get_current_time()
                     
-                    # 30분마다 유휴 드라이버만 새로고침 (사용 중인 드라이버는 보호)
-                    if refresh_cycle >= 30:  # 30분마다 새로고침
-                        logger.info(f"[{current_time.strftime('%Y-%m-%d %H:%M:%S KST')}] 유휴 드라이버 새로고침 시작")
-                        refresh_cycle = 0
-                        
-                        # 유휴 드라이버만 새로고침 (사용 중인 드라이버는 건드리지 않음)
-                        old_drivers = []
-                        while not self.driver_queue.empty():
-                            try:
-                                old_driver = self.driver_queue.get_nowait()
-                                old_drivers.append(old_driver)
-                            except:
-                                break
-                        
-                        # 기존 유휴 드라이버 정리
-                        for driver in old_drivers:
-                            self._quit_driver(driver)
-                        
-                        # 새 드라이버 생성
-                        for _ in range(self.pool_size):
-                            try:
-                                new_driver = self._create_new_driver()
-                                self.driver_queue.put_nowait(new_driver)
-                            except Exception as e:
-                                logger.error(f"유휴 드라이버 새로고침 중 생성 실패: {e}")
-                        
-                        logger.info(f"[{current_time.strftime('%Y-%m-%d %H:%M:%S KST')}] 유휴 드라이버 새로고침 완료")
-                        continue
+                    # 주기적 새로고침 비활성화 - 사용 중인 드라이버 보호 우선
+                    # 메모리 누수보다 안정성이 더 중요함
                     
                     # 사용 중인 드라이버는 건드리지 않음 (크롤링 작업 보호)
                     # 단, 1시간 이상 응답 없는 드라이버만 정리
