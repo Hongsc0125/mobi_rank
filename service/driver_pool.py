@@ -259,15 +259,17 @@ class ChromeDriverPool:
                         logger.info(f"[{current_time.strftime('%Y-%m-%d %H:%M:%S KST')}] 유휴 드라이버 새로고침 완료")
                         continue
                     
-                    # 사용 중인 드라이버 체크
-                    # 20분 이상 사용 중인 드라이버는 종료 예약 (30분에서 20분으로 단축)
+                    # 사용 중인 드라이버는 건드리지 않음 (크롤링 작업 보호)
+                    # 단, 1시간 이상 응답 없는 드라이버만 정리
                     stale_drivers = []
                     for driver, last_used in self.in_use.items():
-                        if current_time - last_used > timedelta(minutes=20):
-                            logger.warning(f"[{current_time.strftime('%Y-%m-%d %H:%M:%S KST')}] 오래된 드라이버 감지 (20분 이상 사용)")
-                            stale_drivers.append(driver)
+                        if current_time - last_used > timedelta(hours=1):
+                            logger.warning(f"[{current_time.strftime('%Y-%m-%d %H:%M:%S KST')}] 1시간 이상 응답 없는 드라이버 감지")
+                            # 드라이버가 실제로 살아있는지 확인
+                            if not self._is_driver_alive(driver):
+                                stale_drivers.append(driver)
                     
-                    # 오래된 드라이버 정리
+                    # 죽은 드라이버만 정리
                     for driver in stale_drivers:
                         if driver in self.in_use:
                             del self.in_use[driver]
