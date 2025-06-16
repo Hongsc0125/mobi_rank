@@ -2255,15 +2255,37 @@ def sequential_rank_crawl_worker(server_num, div=1):
                             except:
                                 pass
                         
+                        # 좀비 프로세스 정리
+                        try:
+                            import psutil
+                            for proc in psutil.process_iter(['pid', 'name']):
+                                if 'chrome' in proc.info['name'].lower():
+                                    try:
+                                        proc.terminate()
+                                    except:
+                                        pass
+                        except:
+                            pass
+                        
                         # 메모리 정리 및 가비지 컬렉션
                         gc.collect()
                         
                         # 새 드라이버 생성 전 잠시 대기 (시스템 리소스 정리 시간)
-                        time.sleep(5)
+                        wait_time = 5 + (driver_restart_count * 2)  # 재시작 횟수에 따라 대기 시간 증가
+                        time.sleep(wait_time)
                         
-                        # 새 드라이버 생성
-                        driver = get_driver(high_performance=True)
-                        logger.info(f"서버 {server_name} 워커의 드라이버 재생성 성공")
+                        # 새 드라이버 생성 (재시도 로직 포함)
+                        for retry in range(3):
+                            try:
+                                driver = get_driver(high_performance=True)
+                                logger.info(f"서버 {server_name} 워커의 드라이버 재생성 성공")
+                                break
+                            except Exception as retry_error:
+                                if retry < 2:
+                                    logger.warning(f"드라이버 생성 재시도 {retry + 1}/3: {retry_error}")
+                                    time.sleep(3 * (retry + 1))
+                                else:
+                                    raise retry_error
                         
                         # 드라이버 재시작 성공 후 잠시 대기
                         time.sleep(2)

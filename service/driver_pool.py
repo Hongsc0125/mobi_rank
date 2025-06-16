@@ -98,7 +98,6 @@ class ChromeDriverPool:
         opts.add_argument("--disable-features=TranslateUI")
         opts.add_argument("--disable-ipc-flooding-protection")
         opts.add_argument("--max_old_space_size=4096")
-        opts.add_argument("--single-process")  # 프로세스 격리 비활성화로 안정성 향상
         
         # 로그 완전 차단
         opts.add_experimental_option("excludeSwitches", ["enable-logging", "enable-automation"])
@@ -112,16 +111,26 @@ class ChromeDriverPool:
         service = Service(executable_path=_chromedriver_path)
         service.log_path = "NUL" if os.name == "nt" else "/dev/null"
         
-        driver = webdriver.Chrome(service=service, options=opts)
-        
-        # DOM 조작을 위한 타임아웃 설정
-        driver.set_page_load_timeout(30)
-        driver.implicitly_wait(10)
-        
-        # webdriver 속성 숨기기 (anti-detection)
-        driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
-        
-        return driver
+        # 재시도 로직 추가
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                driver = webdriver.Chrome(service=service, options=opts)
+                
+                # DOM 조작을 위한 타임아웃 설정
+                driver.set_page_load_timeout(30)
+                driver.implicitly_wait(10)
+                
+                # webdriver 속성 숨기기 (anti-detection)
+                driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+                
+                return driver
+            except Exception as e:
+                logger.warning(f"드라이버 생성 시도 {attempt + 1}/{max_retries} 실패: {e}")
+                if attempt < max_retries - 1:
+                    time.sleep(2 * (attempt + 1))  # 점진적 대기
+                else:
+                    raise
     
     def get_driver(self, timeout=30):
         """사용 가능한 드라이버 가져오기"""
@@ -187,10 +196,22 @@ class ChromeDriverPool:
     def _quit_driver(self, driver):
         """드라이버 안전하게 종료"""
         try:
-            driver.execute_script("window.close();")
             driver.quit()
         except Exception as e:
             logger.warning(f"[{get_current_time().strftime('%Y-%m-%d %H:%M:%S KST')}] 드라이버 종료 오류: {e}")
+        finally:
+            # 좀비 프로세스 방지를 위한 추가 정리
+            try:
+                import psutil
+                import os
+                for proc in psutil.process_iter(['pid', 'name']):
+                    if 'chrome' in proc.info['name'].lower() and proc.info['pid'] != os.getpid():
+                        try:
+                            proc.terminate()
+                        except:
+                            pass
+            except:
+                pass
     
     def _health_check(self):
         """정기적으로 드라이버 상태 체크 및 필요시 재생성"""
