@@ -806,7 +806,7 @@ def fast_sequential_crawl_worker(server_num, div=1):
             # 현재 사이클 크롤링 시작 (배치 처리)
             cycle_success = 0
             cycle_fail = 0
-            batch_size = 50  # 50개씩 배치로 처리
+            batch_size = 200  # 200개씩 배치로 처리 (성능 향상)
             
             for batch_start in range(0, len(character_list), batch_size):
                 batch_end = min(batch_start + batch_size, len(character_list))
@@ -2322,39 +2322,62 @@ def sequential_rank_crawl_worker(server_num, div=1):
         gc.collect()
 
 
-def sequential_server_crawl_worker():
-    """서버별 순차 처리 워커 (DOM 안정성을 위해 하나씩 처리)"""
-    thread_name = threading.current_thread().name
-    update_thread_status(thread_name, "순차 서버 크롤링 시작")
-    
-    server_nums = list(range(1, 8))  # 1부터 7까지의 서버
+def parallel_server_crawl_worker(server_num):
+    """개별 서버 전용 병렬 크롤링 워커"""
+    thread_name = f"서버{server_num}-{get_server_name(server_num)}"
+    threading.current_thread().name = thread_name
+    update_thread_status(thread_name, f"서버 {server_num} 크롤링 시작")
     
     while not shutdown_event.is_set():
         try:
-            # 모든 서버를 순차적으로 처리
-            for server_num in server_nums:
-                if shutdown_event.is_set():
-                    break
-                    
-                try:
-                    logger.info(f"서버 {get_server_name(server_num)} 크롤링 시작")
-                    fast_sequential_crawl_worker(server_num, div=1)
-                    logger.info(f"서버 {get_server_name(server_num)} 크롤링 완료")
-                    
-                    # 서버 간 간격 (Chrome 안정화)
-                    time.sleep(5)
-                    
-                except Exception as e:
-                    logger.error(f"서버 {get_server_name(server_num)} 크롤링 오류: {e}")
-                    time.sleep(10)  # 오류 시 더 긴 대기
-                    
-            # 한 사이클 완료 후 대기
-            logger.info("모든 서버 크롤링 완료, 다음 사이클까지 대기")
-            time.sleep(60)  # 1분 대기 후 다음 사이클
+            logger.info(f"서버 {get_server_name(server_num)} 크롤링 시작")
+            fast_sequential_crawl_worker(server_num, div=1)
+            logger.info(f"서버 {get_server_name(server_num)} 크롤링 완료")
             
+            # 짧은 대기 후 다음 사이클 (60초에서 10초로 단축)
+            time.sleep(10)
+                    
         except Exception as e:
-            logger.error(f"순차 서버 크롤러 오류: {e}")
-            time.sleep(30)
+            logger.error(f"서버 {get_server_name(server_num)} 크롤링 오류: {e}")
+            time.sleep(30)  # 오류 시 대기
+    
+    update_thread_status(thread_name, "종료됨")
+
+def sequential_server_crawl_worker():
+    """서버별 병렬 처리 워커 (7개 서버 동시 처리)"""
+    thread_name = threading.current_thread().name
+    update_thread_status(thread_name, "병렬 서버 크롤링 시작")
+    
+    server_nums = list(range(1, 8))  # 1부터 7까지의 서버
+    server_threads = []
+    
+    # 각 서버마다 별도 스레드 생성
+    for server_num in server_nums:
+        server_thread = threading.Thread(
+            target=parallel_server_crawl_worker,
+            args=(server_num,),
+            name=f"서버{server_num}-{get_server_name(server_num)}",
+            daemon=True
+        )
+        server_thread.start()
+        server_threads.append(server_thread)
+        active_threads.append(server_thread)
+        logger.info(f"서버 {get_server_name(server_num)} 병렬 스레드 시작됨")
+        
+        # 스레드 시작 간 짧은 간격 (안정성)
+        time.sleep(2)
+    
+    # 모든 서버 스레드가 종료될 때까지 대기
+    try:
+        while not shutdown_event.is_set():
+            alive_count = sum(1 for t in server_threads if t.is_alive())
+            if alive_count == 0:
+                logger.warning("모든 서버 스레드가 종료됨, 재시작 필요")
+                break
+            time.sleep(30)  # 30초마다 상태 체크
+            
+    except Exception as e:
+        logger.error(f"병렬 서버 크롤러 모니터링 오류: {e}")
     
     update_thread_status(thread_name, "종료됨")
 
