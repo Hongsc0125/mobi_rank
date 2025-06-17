@@ -439,9 +439,9 @@ def update_thread_status(thread_name, status, details=None):
         # 상태 변경시에만 간결한 로그 출력 (최소로 유지)
         if status in ['시작됨', '종료됨', '오류 발생']:
             if details:
-                logger.info(f"[{thread_name}] {status}: {details}")
+                logger.debug(f"[{thread_name}] {status}: {details}")
             else:
-                logger.info(f"[{thread_name}] {status}")
+                logger.debug(f"[{thread_name}] {status}")
 
 def log_all_thread_status():
     """모든 쓰레드의 현재 상태 로깅 (요약 형태로 줄이기)"""
@@ -594,7 +594,7 @@ def crawl_by_character_search_dom(driver, server_num, character_list, div=1):
     all_data = []
     processed_characters = set()  # 중복 제거용
     
-    logger.info(f"서버 {server_name} 캐릭터 검색 기반 크롤링 시작: {len(character_list)}개 캐릭터")
+    logger.debug(f"서버 {server_name} 캐릭터 검색 기반 크롤링 시작: {len(character_list)}개 캐릭터")
     
     try:
         for idx, character_name in enumerate(character_list):
@@ -621,7 +621,7 @@ def crawl_by_character_search_dom(driver, server_num, character_list, div=1):
                     
                     # 진행률 로깅 (100개마다)
                     if (idx + 1) % 100 == 0:
-                        logger.info(f"서버 {server_name} 진행률: {idx+1}/{len(character_list)} ({((idx+1)/len(character_list)*100):.1f}%), 총 수집: {len(all_data)}개")
+                        logger.debug(f"서버 {server_name} 진행률: {idx+1}/{len(character_list)} ({((idx+1)/len(character_list)*100):.1f}%), 총 수집: {len(all_data)}개")
                 else:
                     logger.warning(f"서버 {server_name} 캐릭터 '{character_name}' 검색 실패")
                 
@@ -632,7 +632,7 @@ def crawl_by_character_search_dom(driver, server_num, character_list, div=1):
                 logger.error(f"서버 {server_name} 캐릭터 '{character_name}' 처리 오류: {e}")
                 continue
         
-        logger.info(f"서버 {server_name} 캐릭터 검색 크롤링 완료: {len(all_data)}개 수집 (중복 제거됨)")
+        logger.debug(f"서버 {server_name} 캐릭터 검색 크롤링 완료: {len(all_data)}개 수집 (중복 제거됨)")
         return all_data
         
     except Exception as e:
@@ -647,7 +647,7 @@ def crawl_by_character_search_dom_safe(driver, server_num, character_list, div=1
     consecutive_failures = 0
     max_consecutive_failures = 5
     
-    logger.info(f"서버 {server_name} 안전한 캐릭터 검색 크롤링 시작: {len(character_list)}개 캐릭터")
+    logger.debug(f"서버 {server_name} 안전한 캐릭터 검색 크롤링 시작: {len(character_list)}개 캐릭터")
     
     try:
         for idx, character_name in enumerate(character_list):
@@ -698,7 +698,7 @@ def crawl_by_character_search_dom_safe(driver, server_num, character_list, div=1
                 
                 # 진행률 로깅 (50개마다)
                 if (idx + 1) % 50 == 0:
-                    logger.info(f"서버 {server_name} 진행률: {idx+1}/{len(character_list)} ({((idx+1)/len(character_list)*100):.1f}%), 총 수집: {len(all_data)}개")
+                    logger.debug(f"서버 {server_name} 진행률: {idx+1}/{len(character_list)} ({((idx+1)/len(character_list)*100):.1f}%), 총 수집: {len(all_data)}개")
                 
             except Exception as e:
                 consecutive_failures += 1
@@ -706,7 +706,7 @@ def crawl_by_character_search_dom_safe(driver, server_num, character_list, div=1
                 time.sleep(1)
                 continue
         
-        logger.info(f"서버 {server_name} 안전 크롤링 완료: {len(all_data)}개 수집 (중복 제거됨)")
+        logger.debug(f"서버 {server_name} 안전 크롤링 완료: {len(all_data)}개 수집 (중복 제거됨)")
         return all_data
         
     except Exception as e:
@@ -761,7 +761,7 @@ def fast_sequential_crawl_worker(server_num, div=1):
     server_name = get_server_name(server_num)
     thread_name = f"고속크롤러_{server_name}"
     
-    logger.info(f"서버 {server_name} 고속 DOM 크롤링 시작 (service/full_data.py 방식)")
+    logger.debug(f"서버 {server_name} 고속 DOM 크롤링 시작 (service/full_data.py 방식)")
     
     try:
         # service/full_data.py와 동일한 방식 사용 (server.py와 완전 동일)
@@ -794,7 +794,7 @@ def fast_sequential_crawl_worker(server_num, div=1):
         
         while True:
             cycle_count += 1
-            logger.info(f"서버 {server_name} 크롤링 사이클 #{cycle_count} 시작")
+            logger.debug(f"서버 {server_name} 크롤링 사이클 #{cycle_count} 시작")
             
             # 현재 업데이트가 필요한 캐릭터 목록 조회
             character_list = get_characters_to_update(server_name, exclude_recent_hours=1)
@@ -2331,9 +2331,9 @@ def parallel_server_crawl_worker(server_num):
     
     while not shutdown_event.is_set():
         try:
-            logger.info(f"서버 {get_server_name(server_num)} 크롤링 시작")
+            logger.debug(f"서버 {get_server_name(server_num)} 크롤링 시작")
             fast_sequential_crawl_worker(server_num, div=1)
-            logger.info(f"서버 {get_server_name(server_num)} 크롤링 완료")
+            logger.debug(f"서버 {get_server_name(server_num)} 크롤링 완료")
             
             # 짧은 대기 후 다음 사이클 (60초에서 10초로 단축)
             time.sleep(10)
