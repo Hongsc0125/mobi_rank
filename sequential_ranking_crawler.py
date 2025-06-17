@@ -730,6 +730,7 @@ def get_character_list_from_db(server_name, exclude_recent_hours=1):
             FROM mabinogi_ranking 
             WHERE server_name = :server_name 
             AND (retrieved_at < :cutoff_time OR retrieved_at IS NULL)
+            AND div = 1
             GROUP BY character_name
             ORDER BY earliest_retrieved_at ASC NULLS FIRST, character_name ASC
         """)
