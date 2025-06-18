@@ -32,12 +32,12 @@ logger = logging.getLogger(__name__)
 class ChromeDriverPool:
     """
     크롬 드라이버 풀 관리 클래스
-    - 3개의 드라이버를 상시 유지
+    - 5개의 드라이버를 상시 유지
     - 요청시 사용 가능한 드라이버 반환
     - 사용 후 풀에 다시 반환
     - 주기적으로 드라이버 상태 체크 및 재생성
     """
-    def __init__(self, pool_size=3):
+    def __init__(self, pool_size=5):
         self.pool_size = pool_size
         self.drivers = []  # 사용 가능한 드라이버 리스트
         self.in_use = {}   # 사용 중인 드라이버 {드라이버: 마지막 사용 시간}
@@ -228,7 +228,7 @@ class ChromeDriverPool:
         """정기적으로 드라이버 상태 체크 및 필요시 재생성"""
         while True:
             try:
-                time.sleep(60)  # 1분마다 체크
+                time.sleep(180)  # 3분마다 체크
                 
                 with self.lock:
                     current_time = get_current_time()
@@ -277,5 +277,5 @@ def get_driver_pool():
     """드라이버 풀 싱글톤 인스턴스 반환"""
     global _driver_pool
     if _driver_pool is None:
-        _driver_pool = ChromeDriverPool(pool_size=8)  # 7개 서버 + 1개 예비
+        _driver_pool = ChromeDriverPool(pool_size=5)  # 드라이버 풀 크기 축소
     return _driver_pool

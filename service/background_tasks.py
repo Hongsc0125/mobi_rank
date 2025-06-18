@@ -272,7 +272,7 @@ def update_population_statistics_task():
 def update_patch_notes_task():
     """
     패치노트 크롤링 백그라운드 작업
-    1분마다 새로운 패치노트가 있는지 확인하고 DB에 저장합니다.
+    5분마다 새로운 패치노트가 있는지 확인하고 DB에 저장합니다.
     """
     # 마지막 체크 시간 기록 (KST 타임존 사용)
     last_check = datetime.now(KST)
@@ -282,8 +282,8 @@ def update_patch_notes_task():
             # 현재 시간 (KST 타임존 사용)
             now = datetime.now(KST)
             
-            # 1분마다 체크 (60초)
-            if (now - last_check).total_seconds() >= 60:
+            # 5분마다 체크 (300초)
+            if (now - last_check).total_seconds() >= 300:
                 print(f"[{now.strftime('%Y-%m-%d %H:%M:%S KST')}] 패치노트 업데이트 확인 중...")
                 new_count = check_new_patch_notes()
                 if new_count > 0:
@@ -295,8 +295,8 @@ def update_patch_notes_task():
                 # 마지막 체크 시간 업데이트
                 last_check = now
             
-            # 10초 대기
-            time.sleep(10)
+            # 30초 대기
+            time.sleep(30)
                 
         except Exception as e:
             print(f"[패치노트 크롤링 오류] {e}")
