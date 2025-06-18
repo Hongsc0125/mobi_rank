@@ -98,6 +98,11 @@ class ChromeDriverPool:
         opts.add_argument("--disable-features=TranslateUI")
         opts.add_argument("--disable-ipc-flooding-protection")
         
+        # 포트 충돌 방지 옵션
+        opts.add_argument("--remote-debugging-port=0")  # 동적 포트 할당
+        opts.add_argument("--disable-background-networking")
+        opts.add_argument("--disable-default-apps")
+        
         # 메모리 누수 방지 옵션 (기능은 유지)
         opts.add_argument("--max_old_space_size=4096")  # 기존 4GB 유지
         opts.add_argument("--memory-pressure-off")
