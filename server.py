@@ -161,7 +161,6 @@ def force_population_statistics():
 
 # 직업별 인구 통계 파이차트 강제 생성 엔드포인트
 @app.get("/force-class-chart", summary="직업별 인구 통계 파이차트 강제 생성")
-@app.get("/force_class_chart", summary="직업별 인구 통계 파이차트 강제 생성")
 def force_class_chart():
     try:
         start_time = datetime.now()
@@ -205,7 +204,6 @@ def force_class_chart():
 
 # 최신 직업별 인구 통계 파이차트 조회 엔드포인트
 @app.get("/class-chart", summary="최신 직업별 인구 통계 파이차트 조회")
-@app.get("/class_chart", summary="최신 직업별 인구 통계 파이차트 조회")
 def get_class_chart():
     try:
         # 캐시된 데이터 가져오기
