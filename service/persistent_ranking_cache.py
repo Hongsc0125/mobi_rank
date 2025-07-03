@@ -358,11 +358,11 @@ class PersistentRankingCache:
                     parsed_data = parse_rank_html(page_source)
                     
                     results[rank_names[rank_type]] = {
-                        "data": parsed_data.get("data", []),
+                        "data": parsed_data,  # parse_rank_html은 이미 list를 반환
                         "retrieved_at": retrieved_at
                     }
                     
-                    logger.info(f"{rank_names[rank_type]} 검색 완료: {len(parsed_data.get('data', []))}개 결과")
+                    logger.info(f"{rank_names[rank_type]} 검색 완료: {len(parsed_data if isinstance(parsed_data, list) else [])}개 결과")
                     
                 except Exception as e:
                     logger.error(f"랭킹 타입 {rank_type} 검색 중 오류: {e}")
