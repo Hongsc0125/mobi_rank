@@ -99,12 +99,12 @@ def rank_data(server=None, name=""):
         }
         
         # 랭킹 데이터 구조 디버깅
-        logger.info(f"all_ranks_data 구조: {type(all_ranks_data)}")
-        logger.info(f"all_ranks_data keys: {list(all_ranks_data.keys()) if isinstance(all_ranks_data, dict) else 'not dict'}")
+        # logger.info(f"all_ranks_data 구조: {type(all_ranks_data)}")
+        # logger.info(f"all_ranks_data keys: {list(all_ranks_data.keys()) if isinstance(all_ranks_data, dict) else 'not dict'}")
         
         # 각 랭킹에서 캐릭터 검색
         for rank_type, rank_data in all_ranks_data.get("ranks", {}).items():
-            logger.info(f"{rank_type} 랭킹 데이터 타입: {type(rank_data)}")
+            # logger.info(f"{rank_type} 랭킹 데이터 타입: {type(rank_data)}")
             if isinstance(rank_data, dict):
                 logger.info(f"{rank_type} 랭킹 데이터 keys: {list(rank_data.keys())}")
                 data_list = rank_data.get("data", [])
@@ -125,7 +125,7 @@ def rank_data(server=None, name=""):
                 search_server = server.strip()
                 search_character = name.strip()
                 
-                logger.info(f"매칭 확인: '{item_character}' == '{search_character}' and '{item_server}' == '{search_server}'")
+                # logger.info(f"매칭 확인: '{item_character}' == '{search_character}' and '{item_server}' == '{search_server}'")
                 
                 if item_server == search_server and item_character == search_character:
                     character_data["rankings"][rank_type] = item
