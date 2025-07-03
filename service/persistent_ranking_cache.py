@@ -354,7 +354,7 @@ class PersistentRankingCache:
                         logger.info(f"{rank_names[rank_type]} 서버 변경: {self.last_server.get(rank_type)} -> {server}")
                         self._select_server_fast(driver, server)
                         self.last_server[rank_type] = server
-                        time.sleep(2)
+                        time.sleep(3)  # selectBoxHandler 완료 대기
                     
                     # 캐릭터 검색
                     logger.info(f"{rank_names[rank_type]} 캐릭터 '{character_name}' 검색 시작")
@@ -397,7 +397,7 @@ class PersistentRankingCache:
         }
     
     def _select_server_fast(self, driver, server):
-        """JavaScript를 사용한 고속 서버 선택 (full_data.py와 동일한 방식)"""
+        """JavaScript를 사용한 고속 서버 선택 (full_data.py와 정확히 동일한 방식)"""
         try:
             # 서버명을 서버 ID로 매핑 (full_data.py와 동일)
             server_mapping = {
@@ -408,16 +408,27 @@ class PersistentRankingCache:
             server_id = server_mapping.get(server, "1")
             logger.info(f"서버 '{server}' -> ID '{server_id}' 매핑")
             
-            # full_data.py와 동일한 방식의 서버 선택
+            # full_data.py와 정확히 동일한 방식의 서버 선택
             script = f"""
+            // 서버 select box 찾기
             var serverBox = document.querySelector('.select_server .select_box');
             if (serverBox) {{
-                var option = document.querySelector('li[data-serverid="{server_id}"]');
-                if (option) {{
-                    option.click();
-                    console.log('서버 선택 클릭 완료: {server} (ID: {server_id})');
+                // selectBoxHandler 호출
+                if (typeof selectBoxHandler === 'function') {{
+                    selectBoxHandler(serverBox);
+                    
+                    // 잠시 대기 후 옵션 클릭
+                    setTimeout(function() {{
+                        var option = document.querySelector('li[data-serverid="{server_id}"]');
+                        if (option) {{
+                            option.click();
+                            console.log('서버 선택 완료: {server} (ID: {server_id})');
+                        }} else {{
+                            console.log('서버 옵션을 찾을 수 없음: {server} (ID: {server_id})');
+                        }}
+                    }}, 500);
                 }} else {{
-                    console.log('서버 옵션을 찾을 수 없음: {server} (ID: {server_id})');
+                    console.log('selectBoxHandler 함수를 찾을 수 없음');
                 }}
             }} else {{
                 console.log('서버 선택 박스를 찾을 수 없음');
@@ -450,28 +461,17 @@ class PersistentRankingCache:
             logger.error(f"폴백 서버 선택 실패: {e}")
     
     def _search_character_fast(self, driver, character_name):
-        """JavaScript를 사용한 고속 캐릭터 검색 (full_data.py와 동일한 방식)"""
+        """JavaScript를 사용한 고속 캐릭터 검색 (full_data.py와 정확히 동일한 방식)"""
         try:
-            # full_data.py와 동일한 셀렉터 사용
-            script = f"""
-            var searchInput = document.querySelector('input[name="search"]');
-            if (searchInput) {{
-                searchInput.value = '{character_name}';
-                searchInput.dispatchEvent(new Event('input'));
-                
-                var searchBtn = document.querySelector('button[data-searchtype="search"]');
-                if (searchBtn) {{
-                    searchBtn.click();
-                    console.log('캐릭터 검색 클릭 완료: {character_name}');
-                }} else {{
-                    console.log('검색 버튼을 찾을 수 없음');
-                }}
-            }} else {{
-                console.log('검색 입력창을 찾을 수 없음');
-            }}
-            """
-            driver.execute_script(script)
-            logger.info(f"캐릭터 검색 JavaScript 실행 완료: {character_name}")
+            # full_data.py와 정확히 동일한 방식 사용
+            search_input = driver.find_element(By.CSS_SELECTOR, "input[name='search']")
+            search_input.clear()
+            search_input.send_keys(character_name)
+            
+            search_button = driver.find_element(By.CSS_SELECTOR, "button[data-searchtype='search']")
+            driver.execute_script("arguments[0].click();", search_button)
+            
+            logger.info(f"캐릭터 검색 완료: {character_name}")
             
         except Exception as e:
             logger.error(f"고속 캐릭터 검색 실패: {e}")
