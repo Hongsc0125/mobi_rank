@@ -98,18 +98,36 @@ def rank_data(server=None, name=""):
             }
         }
         
-        # 랭킹 데이터
-        # logger.info(f"all_ranks_data: {all_ranks_data}")
+        # 랭킹 데이터 구조 디버깅
+        logger.info(f"all_ranks_data 구조: {type(all_ranks_data)}")
+        logger.info(f"all_ranks_data keys: {list(all_ranks_data.keys()) if isinstance(all_ranks_data, dict) else 'not dict'}")
         
         # 각 랭킹에서 캐릭터 검색
         for rank_type, rank_data in all_ranks_data.get("ranks", {}).items():
-            # logger.info(f"{rank_type} 랭킹 데이터: {rank_data}")
-            # logger.info(f"{rank_type} 랭킹 데이터 항목 수: {len(rank_data.get('data', []))}")
+            logger.info(f"{rank_type} 랭킹 데이터 타입: {type(rank_data)}")
+            if isinstance(rank_data, dict):
+                logger.info(f"{rank_type} 랭킹 데이터 keys: {list(rank_data.keys())}")
+                data_list = rank_data.get("data", [])
+            else:
+                # rank_data가 직접 list인 경우
+                data_list = rank_data if isinstance(rank_data, list) else []
             
-            for item in rank_data.get("data", []):
-                # logger.info(f"검색 중: {item}")
-                if item.get('server') == server and item.get('character') == name:
-                    # logger.info(f"캐릭터 매칭: {item['server']} == {server} and {item['character']} == {name}")
+            logger.info(f"{rank_type} 랭킹 데이터 항목 수: {len(data_list)}")
+            
+            # 첫 번째 항목 구조 확인
+            if data_list:
+                logger.info(f"{rank_type} 첫 번째 항목: {data_list[0]}")
+            
+            for item in data_list:
+                # 정확한 매칭을 위해 공백 제거 및 대소문자 처리
+                item_server = item.get('server', '').strip()
+                item_character = item.get('character', '').strip()
+                search_server = server.strip()
+                search_character = name.strip()
+                
+                logger.info(f"매칭 확인: '{item_character}' == '{search_character}' and '{item_server}' == '{search_server}'")
+                
+                if item_server == search_server and item_character == search_character:
                     character_data["rankings"][rank_type] = item
                     logger.info(f"캐릭터 '{name}'의 {rank_type} 랭킹 데이터 찾음: {item}")
                     break
