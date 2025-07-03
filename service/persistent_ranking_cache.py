@@ -330,7 +330,7 @@ class PersistentRankingCache:
             return None
             
         results = {}
-        retrieved_at = datetime.now(KST).isoformat()
+        retrieved_at = datetime.now(KST).strftime('%Y-%m-%d %H:%M:%S')
         
         rank_names = {1: "전투력", 2: "매력", 3: "생활력"}
         
