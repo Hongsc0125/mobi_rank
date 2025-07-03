@@ -29,7 +29,7 @@ def fetch_patch_note_list():
         soup = BeautifulSoup(resp.text, "html.parser")
 
         notes = []
-        for a_tag in soup.select('a.title'):
+        for a_tag in soup.select('ul.list li.item a.title'):
             title = a_tag.text.strip()
             onclick = a_tag.get("onclick", "")
             match = re.search(r'\((\d+),', onclick)
