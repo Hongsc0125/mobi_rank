@@ -88,10 +88,9 @@ class HtmlImageReq(BaseModel):
 @app.post("/search", summary="캐릭터 랭킹 조회")
 def api_search(req: SearchReq, request: Request):
     """
-    캐릭터 랭킹을 조회합니다.
-    큐 시스템을 사용하여 순차 처리하되, 결과가 완료될 때까지 기다린 후 반환합니다.
+    캐릭터 랭킹 조회 요청을 큐에 추가하고 작업 ID를 반환합니다.
+    반환된 작업 ID로 /search/status/{job_id}를 호출하여 결과를 확인할 수 있습니다.
     """
-    import time
     try:
         from service.search_queue import search_queue_manager
         
@@ -99,130 +98,124 @@ def api_search(req: SearchReq, request: Request):
         client_ip = request.client.host
         user_agent = request.headers.get("user-agent", "")
         
-        # 검색 요청을 큐에 추가 (높은 우선순위)
+        # 검색 요청을 큐에 추가
         request_id = search_queue_manager.enqueue_search_request(
             server=req.server,
             character_name=req.character,
             client_ip=client_ip,
             user_agent=user_agent,
-            priority=1  # 높은 우선순위 (즉시 처리)
+            priority=10  # 일반 우선순위
         )
         
-        # 결과가 완료될 때까지 폴링
-        max_wait_time = 120  # 최대 2분 대기
-        poll_interval = 1    # 1초마다 체크
-        waited_time = 0
+        # 작업 ID 반환
+        return {
+            "success": True,
+            "job_id": request_id,
+            "message": "검색 요청이 큐에 추가되었습니다.",
+            "status_url": f"/search/status/{request_id}",
+            "estimated_wait_time": "약 10-30초 (큐 상황에 따라 변동)"
+        }
         
-        while waited_time < max_wait_time:
-            status_info = search_queue_manager.get_request_status(request_id)
-            
-            if not status_info:
-                raise HTTPException(status_code=500, detail="검색 요청 상태를 확인할 수 없습니다.")
-            
-            if status_info["status"] == "completed" and status_info["result"]:
-                # 완료된 경우 결과 반환
-                result = status_info["result"]
-                
-                # 기존 형식으로 응답 변환
-                if isinstance(result, dict) and "data" in result and "success" in result:
-                    character_data = result.get("data")
-                    message = result.get("message", "")
-                    success = result.get("success", False)
-                    
-                    response = {
-                        "success": success,
-                        "message": message,
-                        "from_cache": result.get("from_cache", False),
-                        "queue_processed": True
-                    }
-                    
-                    if character_data:
-                        response["character"] = character_data
-                        
-                    return response
-                else:
-                    return result
-                    
-            elif status_info["status"] == "failed":
-                # 실패한 경우
-                error_msg = status_info.get("error_message", "검색 처리 실패")
-                raise HTTPException(status_code=500, detail=f"검색 실패: {error_msg}")
-                
-            elif status_info["status"] in ["pending", "processing"]:
-                # 아직 처리 중인 경우 계속 대기
-                time.sleep(poll_interval)
-                waited_time += poll_interval
-                continue
-                
-            else:
-                # 기타 상태 (timeout 등)
-                error_msg = status_info.get("error_message", f"알 수 없는 상태: {status_info['status']}")
-                raise HTTPException(status_code=500, detail=f"검색 오류: {error_msg}")
-        
-        # 타임아웃 발생
-        raise HTTPException(status_code=408, detail="검색 요청 타임아웃. 나중에 다시 시도해주세요.")
-        
-    except HTTPException:
-        raise
     except Exception as e:
-        logger.error(f"검색 요청 처리 실패: {e}")
+        logger.error(f"검색 요청 큐 추가 실패: {e}")
         raise HTTPException(status_code=500, detail=f"서버 에러: {str(e)}")
 
-@app.get("/search/status/{request_id}", summary="검색 요청 상태 조회")
-def get_search_status(request_id: str):
-    """검색 요청의 상태와 결과를 조회합니다."""
+@app.get("/search/status/{job_id}", summary="검색 작업 상태 및 결과 조회")
+def get_search_status(job_id: str):
+    """
+    검색 작업의 상태와 결과를 조회합니다.
+    작업이 완료된 경우 기존 /search API와 동일한 형식으로 결과를 반환합니다.
+    """
     try:
         from service.search_queue import search_queue_manager
         
         # 요청 상태 조회
-        status_info = search_queue_manager.get_request_status(request_id)
+        status_info = search_queue_manager.get_request_status(job_id)
         
         if not status_info:
-            raise HTTPException(status_code=404, detail="검색 요청을 찾을 수 없습니다.")
+            raise HTTPException(status_code=404, detail="검색 작업을 찾을 수 없습니다.")
         
-        # 응답 구성
-        response = {
-            "request_id": status_info["request_id"],
-            "server": status_info["server"],
-            "character_name": status_info["character_name"],
-            "status": status_info["status"],
-            "created_at": status_info["created_at"],
-            "started_at": status_info["started_at"],
-            "completed_at": status_info["completed_at"]
-        }
-        
-        # 상태별 추가 정보
+        # 상태별 응답 구성
         if status_info["status"] == "completed" and status_info["result"]:
-            # 완료된 경우 검색 결과 포함
-            response["result"] = status_info["result"]
-            response["success"] = True
-            response["message"] = "검색이 완료되었습니다."
+            # 완료된 경우: 기존 /search API와 동일한 형식으로 반환
+            result = status_info["result"]
+            
+            if isinstance(result, dict) and "data" in result and "success" in result:
+                character_data = result.get("data")
+                message = result.get("message", "")
+                success = result.get("success", False)
+                
+                response = {
+                    "success": success,
+                    "message": message,
+                    "from_cache": result.get("from_cache", False),
+                    "job_id": job_id,
+                    "status": "completed",
+                    "completed_at": status_info["completed_at"]
+                }
+                
+                if character_data:
+                    response["character"] = character_data
+                    
+                return response
+            else:
+                # 예상과 다른 결과 형식인 경우
+                return {
+                    "success": True,
+                    "job_id": job_id,
+                    "status": "completed",
+                    "result": result,
+                    "completed_at": status_info["completed_at"]
+                }
             
         elif status_info["status"] == "failed":
-            # 실패한 경우 오류 메시지 포함
-            response["success"] = False
-            response["error"] = status_info["error_message"]
-            response["retry_count"] = status_info["retry_count"]
-            response["message"] = "검색이 실패했습니다."
+            # 실패한 경우
+            return {
+                "success": False,
+                "job_id": job_id,
+                "status": "failed",
+                "error": status_info["error_message"],
+                "retry_count": status_info["retry_count"],
+                "message": "검색이 실패했습니다.",
+                "server": status_info["server"],
+                "character_name": status_info["character_name"]
+            }
             
         elif status_info["status"] == "processing":
             # 처리 중인 경우
-            response["success"] = True
-            response["message"] = "검색이 처리 중입니다."
+            return {
+                "success": True,
+                "job_id": job_id,
+                "status": "processing",
+                "message": "검색이 처리 중입니다.",
+                "server": status_info["server"],
+                "character_name": status_info["character_name"],
+                "started_at": status_info["started_at"]
+            }
             
         elif status_info["status"] == "pending":
             # 대기 중인 경우
-            response["success"] = True
-            response["message"] = "검색이 대기 중입니다."
+            return {
+                "success": True,
+                "job_id": job_id,
+                "status": "pending",
+                "message": "검색이 대기 중입니다.",
+                "server": status_info["server"],
+                "character_name": status_info["character_name"],
+                "created_at": status_info["created_at"]
+            }
             
         else:
             # 기타 상태 (timeout 등)
-            response["success"] = False
-            response["message"] = f"검색 상태: {status_info['status']}"
-            if status_info["error_message"]:
-                response["error"] = status_info["error_message"]
-        
-        return response
+            return {
+                "success": False,
+                "job_id": job_id,
+                "status": status_info["status"],
+                "message": f"검색 상태: {status_info['status']}",
+                "error": status_info.get("error_message"),
+                "server": status_info["server"],
+                "character_name": status_info["character_name"]
+            }
         
     except HTTPException:
         raise
