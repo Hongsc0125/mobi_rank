@@ -86,8 +86,190 @@ class HtmlImageReq(BaseModel):
     html: str
 
 @app.post("/search", summary="캐릭터 랭킹 조회")
-def api_search(req: SearchReq):
-    # logger.info(f"--- 캐릭터 랭킹 조회시작: {req.server} - {req.character}")
+def api_search(req: SearchReq, request: Request):
+    """
+    캐릭터 랭킹을 조회합니다.
+    큐 시스템을 사용하여 순차 처리하되, 결과가 완료될 때까지 기다린 후 반환합니다.
+    """
+    import time
+    try:
+        from service.search_queue import search_queue_manager
+        
+        # 클라이언트 정보 추출
+        client_ip = request.client.host
+        user_agent = request.headers.get("user-agent", "")
+        
+        # 검색 요청을 큐에 추가 (높은 우선순위)
+        request_id = search_queue_manager.enqueue_search_request(
+            server=req.server,
+            character_name=req.character,
+            client_ip=client_ip,
+            user_agent=user_agent,
+            priority=1  # 높은 우선순위 (즉시 처리)
+        )
+        
+        # 결과가 완료될 때까지 폴링
+        max_wait_time = 120  # 최대 2분 대기
+        poll_interval = 1    # 1초마다 체크
+        waited_time = 0
+        
+        while waited_time < max_wait_time:
+            status_info = search_queue_manager.get_request_status(request_id)
+            
+            if not status_info:
+                raise HTTPException(status_code=500, detail="검색 요청 상태를 확인할 수 없습니다.")
+            
+            if status_info["status"] == "completed" and status_info["result"]:
+                # 완료된 경우 결과 반환
+                result = status_info["result"]
+                
+                # 기존 형식으로 응답 변환
+                if isinstance(result, dict) and "data" in result and "success" in result:
+                    character_data = result.get("data")
+                    message = result.get("message", "")
+                    success = result.get("success", False)
+                    
+                    response = {
+                        "success": success,
+                        "message": message,
+                        "from_cache": result.get("from_cache", False),
+                        "queue_processed": True
+                    }
+                    
+                    if character_data:
+                        response["character"] = character_data
+                        
+                    return response
+                else:
+                    return result
+                    
+            elif status_info["status"] == "failed":
+                # 실패한 경우
+                error_msg = status_info.get("error_message", "검색 처리 실패")
+                raise HTTPException(status_code=500, detail=f"검색 실패: {error_msg}")
+                
+            elif status_info["status"] in ["pending", "processing"]:
+                # 아직 처리 중인 경우 계속 대기
+                time.sleep(poll_interval)
+                waited_time += poll_interval
+                continue
+                
+            else:
+                # 기타 상태 (timeout 등)
+                error_msg = status_info.get("error_message", f"알 수 없는 상태: {status_info['status']}")
+                raise HTTPException(status_code=500, detail=f"검색 오류: {error_msg}")
+        
+        # 타임아웃 발생
+        raise HTTPException(status_code=408, detail="검색 요청 타임아웃. 나중에 다시 시도해주세요.")
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"검색 요청 처리 실패: {e}")
+        raise HTTPException(status_code=500, detail=f"서버 에러: {str(e)}")
+
+@app.get("/search/status/{request_id}", summary="검색 요청 상태 조회")
+def get_search_status(request_id: str):
+    """검색 요청의 상태와 결과를 조회합니다."""
+    try:
+        from service.search_queue import search_queue_manager
+        
+        # 요청 상태 조회
+        status_info = search_queue_manager.get_request_status(request_id)
+        
+        if not status_info:
+            raise HTTPException(status_code=404, detail="검색 요청을 찾을 수 없습니다.")
+        
+        # 응답 구성
+        response = {
+            "request_id": status_info["request_id"],
+            "server": status_info["server"],
+            "character_name": status_info["character_name"],
+            "status": status_info["status"],
+            "created_at": status_info["created_at"],
+            "started_at": status_info["started_at"],
+            "completed_at": status_info["completed_at"]
+        }
+        
+        # 상태별 추가 정보
+        if status_info["status"] == "completed" and status_info["result"]:
+            # 완료된 경우 검색 결과 포함
+            response["result"] = status_info["result"]
+            response["success"] = True
+            response["message"] = "검색이 완료되었습니다."
+            
+        elif status_info["status"] == "failed":
+            # 실패한 경우 오류 메시지 포함
+            response["success"] = False
+            response["error"] = status_info["error_message"]
+            response["retry_count"] = status_info["retry_count"]
+            response["message"] = "검색이 실패했습니다."
+            
+        elif status_info["status"] == "processing":
+            # 처리 중인 경우
+            response["success"] = True
+            response["message"] = "검색이 처리 중입니다."
+            
+        elif status_info["status"] == "pending":
+            # 대기 중인 경우
+            response["success"] = True
+            response["message"] = "검색이 대기 중입니다."
+            
+        else:
+            # 기타 상태 (timeout 등)
+            response["success"] = False
+            response["message"] = f"검색 상태: {status_info['status']}"
+            if status_info["error_message"]:
+                response["error"] = status_info["error_message"]
+        
+        return response
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"검색 상태 조회 실패: {e}")
+        raise HTTPException(status_code=500, detail=f"서버 에러: {str(e)}")
+
+@app.post("/search/async", summary="캐릭터 랭킹 조회 (비동기)")
+def api_search_async(req: SearchReq, request: Request):
+    """
+    비동기 방식의 캐릭터 랭킹 조회입니다.
+    요청 ID를 즉시 반환하고, /search/status/{request_id}로 결과를 확인할 수 있습니다.
+    """
+    try:
+        from service.search_queue import search_queue_manager
+        
+        # 클라이언트 정보 추출
+        client_ip = request.client.host
+        user_agent = request.headers.get("user-agent", "")
+        
+        # 검색 요청을 큐에 추가
+        request_id = search_queue_manager.enqueue_search_request(
+            server=req.server,
+            character_name=req.character,
+            client_ip=client_ip,
+            user_agent=user_agent,
+            priority=10  # 일반 우선순위
+        )
+        
+        # 요청 ID 반환 (비동기 처리)
+        return {
+            "success": True,
+            "request_id": request_id,
+            "message": "검색 요청이 큐에 추가되었습니다. /search/status/{request_id}로 상태를 확인하세요.",
+            "status_url": f"/search/status/{request_id}"
+        }
+        
+    except Exception as e:
+        logger.error(f"비동기 검색 요청 실패: {e}")
+        raise HTTPException(status_code=500, detail=f"서버 에러: {str(e)}")
+
+@app.post("/search/sync", summary="캐릭터 랭킹 조회 (동기식)")
+def api_search_sync(req: SearchReq):
+    """
+    기존 방식의 동기식 캐릭터 랭킹 조회입니다.
+    큐 시스템을 거치지 않고 즉시 처리하여 결과를 반환합니다.
+    """
     try:
         result = rank_data(req.server, req.character)
         
@@ -102,14 +284,13 @@ def api_search(req: SearchReq):
             response = {
                 "success": success,
                 "message": message,
-                "from_cache": result.get("from_cache", False)
+                "from_cache": result.get("from_cache", False),
+                "queue_processed": False
             }
             
             # Only include character data if it exists
             if character_data:
                 response["character"] = character_data
-
-            logger.info(f"Response: {response}")
                 
             return response
         
@@ -270,34 +451,100 @@ def get_cache_status():
             "message": "캐시 상태 조회 실패"
         }
 
+# 검색 큐 관리 엔드포인트들
+@app.get("/search/queue/status", summary="검색 큐 상태 조회")
+def get_queue_status():
+    """검색 큐와 워커의 상태를 조회합니다."""
+    try:
+        from service.search_worker import search_worker_manager
+        from service.search_queue import search_queue_manager
+        
+        worker_status = search_worker_manager.get_status()
+        queue_stats = search_queue_manager.get_queue_stats()
+        
+        return {
+            "success": True,
+            "worker_manager": worker_status,
+            "queue_statistics": queue_stats,
+            "message": "큐 상태 조회 성공"
+        }
+    except Exception as e:
+        logger.error(f"큐 상태 조회 중 오류: {e}")
+        return {
+            "success": False,
+            "error": str(e),
+            "message": "큐 상태 조회 실패"
+        }
+
+@app.post("/search/queue/cleanup", summary="오래된 검색 요청 정리")
+def cleanup_old_requests():
+    """완료된 오래된 검색 요청들을 정리합니다."""
+    try:
+        from service.search_queue import search_queue_manager
+        
+        search_queue_manager.cleanup_old_requests(days=1)
+        
+        return {
+            "success": True,
+            "message": "오래된 검색 요청 정리 완료"
+        }
+    except Exception as e:
+        logger.error(f"검색 요청 정리 중 오류: {e}")
+        return {
+            "success": False,
+            "error": str(e),
+            "message": "검색 요청 정리 실패"
+        }
+
 # Start background tasks when the server starts
 @app.on_event("startup")
 async def startup_event():
     start_background_tasks()
     logger.info("Background tasks started")
     
-    # 고속 랭킹 캐시 초기화 (백그라운드에서)
+    # 검색 큐 시스템 초기화
     import threading
+    from service.search_queue import create_search_queue_table
+    from service.search_worker import search_worker_manager
     from service.persistent_ranking_cache import initialize_ranking_cache
     
-    def init_cache():
+    def init_systems():
         try:
+            # 1. 검색 큐 테이블 생성
+            logger.info("검색 큐 시스템 초기화 시작...")
+            create_search_queue_table()
+            logger.info("검색 큐 테이블 생성 완료")
+            
+            # 2. 검색 워커 시작 (1개 워커)
+            search_worker_manager.start_workers(worker_count=1)
+            logger.info("검색 워커 시작 완료")
+            
+            # 3. 고속 랭킹 캐시 초기화
             logger.info("고속 랭킹 캐시 초기화 시작...")
             success = initialize_ranking_cache()
             if success:
                 logger.info("고속 랭킹 캐시 초기화 성공")
             else:
                 logger.warning("고속 랭킹 캐시 초기화 실패, 기존 방식 사용")
+                
         except Exception as e:
-            logger.error(f"고속 랭킹 캐시 초기화 중 오류: {e}", exc_info=True)
+            logger.error(f"시스템 초기화 중 오류: {e}", exc_info=True)
     
-    cache_thread = threading.Thread(target=init_cache, daemon=True)
-    cache_thread.start()
+    init_thread = threading.Thread(target=init_systems, daemon=True)
+    init_thread.start()
 
 # Shutdown event handler
 @app.on_event("shutdown")
 async def shutdown_event():
     logger.info("서버 종료 중...")
+    
+    # 검색 워커 정리
+    try:
+        from service.search_worker import search_worker_manager
+        search_worker_manager.stop_workers()
+        logger.info("검색 워커 정리 완료")
+    except Exception as e:
+        logger.error(f"검색 워커 정리 중 오류: {e}")
     
     # 고속 랭킹 캐시 정리
     try:
