@@ -289,7 +289,7 @@ async def startup_event():
             else:
                 logger.warning("고속 랭킹 캐시 초기화 실패, 기존 방식 사용")
         except Exception as e:
-            logger.error(f"고속 랭킹 캐시 초기화 중 오류: {e}")
+            logger.error(f"고속 랭킹 캐시 초기화 중 오류: {e}", exc_info=True)
     
     cache_thread = threading.Thread(target=init_cache, daemon=True)
     cache_thread.start()

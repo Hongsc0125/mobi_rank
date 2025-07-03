@@ -28,7 +28,13 @@ logger = logging.getLogger(__name__)
 
 def get_driver_for_cache(high_performance=True):
     """캐시용 드라이버 생성 (안정성 옵션 포함)"""
-    chromedriver_autoinstaller.install()
+    try:
+        chromedriver_autoinstaller.install()
+        logger.info("ChromeDriver 설치 확인 완료")
+    except Exception as e:
+        logger.error(f"ChromeDriver 설치 실패: {e}")
+        raise
+    
     opts = Options()
     
     # 필수 옵션
@@ -120,6 +126,19 @@ class PersistentRankingCache:
                 
             logger.info("지속적인 랭킹 페이지 캐시 초기화 시작...")
             
+            # Chrome 사용 가능성 미리 체크
+            try:
+                test_driver = get_driver_for_cache(high_performance=True)
+                if not validate_driver_cache(test_driver):
+                    logger.error("Chrome WebDriver 테스트 실패")
+                    safe_quit_driver_cache(test_driver)
+                    return False
+                safe_quit_driver_cache(test_driver)
+                logger.info("Chrome WebDriver 테스트 성공")
+            except Exception as e:
+                logger.error(f"Chrome WebDriver 사용 불가: {e}")
+                return False
+            
             rank_types = {
                 1: "전투력",
                 2: "매력", 
@@ -160,7 +179,7 @@ class PersistentRankingCache:
                         safe_quit_driver_cache(driver)
                         
                 except Exception as e:
-                    logger.error(f"{rank_name} 랭킹 페이지 초기화 실패: {e}")
+                    logger.error(f"{rank_name} 랭킹 페이지 초기화 실패: {e}", exc_info=True)
                     if 'driver' in locals():
                         safe_quit_driver_cache(driver)
             
@@ -180,9 +199,13 @@ class PersistentRankingCache:
         """페이지가 정상적으로 로드되었는지 확인"""
         try:
             # 랭킹 리스트 요소 확인
-            driver.find_element(By.CSS_SELECTOR, "div[data-mm-rankinglist], ul.list")
+            element = driver.find_element(By.CSS_SELECTOR, "div[data-mm-rankinglist], ul.list")
+            logger.info(f"페이지 로드 검증 성공: {element.tag_name} 요소 발견")
             return True
-        except:
+        except Exception as e:
+            logger.error(f"페이지 로드 검증 실패: {e}")
+            logger.error(f"현재 URL: {driver.current_url}")
+            logger.error(f"페이지 타이틀: {driver.title}")
             return False
     
     def _start_health_monitor(self):
@@ -311,19 +334,23 @@ class PersistentRankingCache:
         }
     
     def _select_server_fast(self, driver, server):
-        """JavaScript를 사용한 고속 서버 선택"""
+        """JavaScript를 사용한 고속 서버 선택 (full_data.py와 동일한 방식)"""
         try:
-            # 서버 선택 JavaScript 실행
+            # 서버명을 서버 ID로 매핑
+            server_mapping = {
+                "데이안": "1", "이데나": "2", "리브네": "3", "나샤": "4", 
+                "티엔": "5", "레웨카": "6", "만돈": "7"
+            }
+            
+            server_id = server_mapping.get(server, "1")
+            
+            # full_data.py와 동일한 방식의 서버 선택
             script = f"""
-            var serverSelect = document.querySelector('select[data-mm-rankingserverlist]');
-            if (serverSelect) {{
-                var options = serverSelect.options;
-                for (var i = 0; i < options.length; i++) {{
-                    if (options[i].text.includes('{server}')) {{
-                        serverSelect.selectedIndex = i;
-                        serverSelect.dispatchEvent(new Event('change'));
-                        break;
-                    }}
+            var serverBox = document.querySelector('.select_server .select_box');
+            if (serverBox) {{
+                var option = document.querySelector('li[data-serverid="{server_id}"]');
+                if (option) {{
+                    option.click();
                 }}
             }}
             """
@@ -337,28 +364,32 @@ class PersistentRankingCache:
     def _select_server_fallback(self, driver, server):
         """기존 방식의 서버 선택 (폴백)"""
         try:
-            server_select = driver.find_element(By.CSS_SELECTOR, "select[data-mm-rankingserverlist]")
-            options = server_select.find_elements(By.TAG_NAME, "option")
+            # 서버명을 서버 ID로 매핑
+            server_mapping = {
+                "데이안": "1", "이데나": "2", "리브네": "3", "나샤": "4", 
+                "티엔": "5", "레웨카": "6", "만돈": "7"
+            }
             
-            for option in options:
-                if server in option.text:
-                    option.click()
-                    break
+            server_id = server_mapping.get(server, "1")
+            
+            # 실제 웹사이트 구조에 맞는 셀렉터 사용
+            option = driver.find_element(By.CSS_SELECTOR, f'li[data-serverid="{server_id}"]')
+            option.click()
                     
         except Exception as e:
             logger.error(f"폴백 서버 선택 실패: {e}")
     
     def _search_character_fast(self, driver, character_name):
-        """JavaScript를 사용한 고속 캐릭터 검색"""
+        """JavaScript를 사용한 고속 캐릭터 검색 (full_data.py와 동일한 방식)"""
         try:
-            # 검색창 찾기 및 입력
+            # full_data.py와 동일한 셀렉터 사용
             script = f"""
-            var searchInput = document.querySelector('input[data-mm-rankingsearchinput]');
+            var searchInput = document.querySelector('input[name="search"]');
             if (searchInput) {{
                 searchInput.value = '{character_name}';
                 searchInput.dispatchEvent(new Event('input'));
                 
-                var searchBtn = document.querySelector('button[data-mm-rankingsearchbtn]');
+                var searchBtn = document.querySelector('button[data-searchtype="search"]');
                 if (searchBtn) {{
                     searchBtn.click();
                 }}
@@ -374,11 +405,12 @@ class PersistentRankingCache:
     def _search_character_fallback(self, driver, character_name):
         """기존 방식의 캐릭터 검색 (폴백)"""
         try:
-            search_input = driver.find_element(By.CSS_SELECTOR, "input[data-mm-rankingsearchinput]")
+            # full_data.py와 동일한 셀렉터 사용
+            search_input = driver.find_element(By.CSS_SELECTOR, 'input[name="search"]')
             search_input.clear()
             search_input.send_keys(character_name)
             
-            search_btn = driver.find_element(By.CSS_SELECTOR, "button[data-mm-rankingsearchbtn]")
+            search_btn = driver.find_element(By.CSS_SELECTOR, 'button[data-searchtype="search"]')
             search_btn.click()
             
         except Exception as e:

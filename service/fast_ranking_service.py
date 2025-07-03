@@ -48,8 +48,11 @@ def is_fast_search_available():
     """고속 검색이 사용 가능한지 확인"""
     try:
         cache = get_ranking_cache()
-        return cache.initialized and cache.running
-    except:
+        available = cache.initialized and cache.running
+        logger.info(f"고속 캐시 사용 가능성: {available}")
+        return available
+    except Exception as e:
+        logger.error(f"고속 캐시 상태 확인 실패: {e}")
         return False
 
 def get_cache_status():
