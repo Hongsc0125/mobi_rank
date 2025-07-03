@@ -345,13 +345,17 @@ class PersistentRankingCache:
                     
                     # 서버 변경 (필요한 경우만)
                     if self.last_server.get(rank_type) != server:
+                        logger.info(f"{rank_names[rank_type]} 서버 변경: {self.last_server.get(rank_type)} -> {server}")
                         self._select_server_fast(driver, server)
                         self.last_server[rank_type] = server
-                        time.sleep(1)
+                        time.sleep(2)  # 서버 변경 후 충분한 대기시간
+                    else:
+                        logger.info(f"{rank_names[rank_type]} 서버 변경 불필요: 이미 {server} 선택됨")
                     
                     # 캐릭터 검색
+                    logger.info(f"{rank_names[rank_type]} 캐릭터 '{character_name}' 검색 시작")
                     self._search_character_fast(driver, character_name)
-                    time.sleep(2)
+                    time.sleep(3)  # 검색 결과 로딩 대기시간 증가
                     
                     # 결과 파싱
                     page_source = driver.page_source
@@ -385,13 +389,14 @@ class PersistentRankingCache:
     def _select_server_fast(self, driver, server):
         """JavaScript를 사용한 고속 서버 선택 (full_data.py와 동일한 방식)"""
         try:
-            # 서버명을 서버 ID로 매핑
+            # 서버명을 서버 ID로 매핑 (full_data.py와 동일)
             server_mapping = {
-                "데이안": "1", "이데나": "2", "리브네": "3", "나샤": "4", 
-                "티엔": "5", "레웨카": "6", "만돈": "7"
+                "데이안": "1", "아이라": "2", "던컨": "3", "알리사": "4",
+                "메이븐": "5", "라사": "6", "칼릭스": "7"
             }
             
             server_id = server_mapping.get(server, "1")
+            logger.info(f"서버 '{server}' -> ID '{server_id}' 매핑")
             
             # full_data.py와 동일한 방식의 서버 선택
             script = f"""
@@ -400,10 +405,16 @@ class PersistentRankingCache:
                 var option = document.querySelector('li[data-serverid="{server_id}"]');
                 if (option) {{
                     option.click();
+                    console.log('서버 선택 클릭 완료: {server} (ID: {server_id})');
+                }} else {{
+                    console.log('서버 옵션을 찾을 수 없음: {server} (ID: {server_id})');
                 }}
+            }} else {{
+                console.log('서버 선택 박스를 찾을 수 없음');
             }}
             """
             driver.execute_script(script)
+            logger.info(f"서버 선택 JavaScript 실행 완료: {server}")
             
         except Exception as e:
             logger.error(f"고속 서버 선택 실패: {e}")
@@ -413,10 +424,10 @@ class PersistentRankingCache:
     def _select_server_fallback(self, driver, server):
         """기존 방식의 서버 선택 (폴백)"""
         try:
-            # 서버명을 서버 ID로 매핑
+            # 서버명을 서버 ID로 매핑 (full_data.py와 동일)
             server_mapping = {
-                "데이안": "1", "이데나": "2", "리브네": "3", "나샤": "4", 
-                "티엔": "5", "레웨카": "6", "만돈": "7"
+                "데이안": "1", "아이라": "2", "던컨": "3", "알리사": "4",
+                "메이븐": "5", "라사": "6", "칼릭스": "7"
             }
             
             server_id = server_mapping.get(server, "1")
@@ -441,10 +452,16 @@ class PersistentRankingCache:
                 var searchBtn = document.querySelector('button[data-searchtype="search"]');
                 if (searchBtn) {{
                     searchBtn.click();
+                    console.log('캐릭터 검색 클릭 완료: {character_name}');
+                }} else {{
+                    console.log('검색 버튼을 찾을 수 없음');
                 }}
+            }} else {{
+                console.log('검색 입력창을 찾을 수 없음');
             }}
             """
             driver.execute_script(script)
+            logger.info(f"캐릭터 검색 JavaScript 실행 완료: {character_name}")
             
         except Exception as e:
             logger.error(f"고속 캐릭터 검색 실패: {e}")
