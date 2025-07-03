@@ -466,7 +466,7 @@ def shutdown_all():
     
     logger.info("종료 완료")
 
-def get_driver(high_performance=True):
+def get_driver(high_performance=True, port=None):
     chromedriver_autoinstaller.install()
     opts = Options()
     
@@ -481,6 +481,20 @@ def get_driver(high_performance=True):
     opts.add_argument("--silent")
     opts.add_argument("--log-level=3")
     opts.add_argument("--window-size=1200,800")
+    
+    # 동적 포트 할당으로 포트 충돌 방지
+    if port:
+        opts.add_argument(f"--remote-debugging-port={port}")
+    else:
+        opts.add_argument("--remote-debugging-port=0")
+    
+    # 안정성 향상 옵션
+    opts.add_argument("--disable-crash-reporter")
+    opts.add_argument("--disable-in-process-stack-traces")
+    opts.add_argument("--disable-crash-reporter-for-testing")
+    opts.add_argument("--no-first-run")
+    opts.add_argument("--disable-background-networking")
+    opts.add_argument("--disable-component-update")
     
     # 로그 완전 차단
     opts.add_experimental_option("excludeSwitches", ["enable-logging"])
@@ -500,7 +514,125 @@ def get_driver(high_performance=True):
     service = Service()
     service.log_path = "NUL" if os.name == "nt" else "/dev/null"
     
-    return webdriver.Chrome(service=service, options=opts)
+    driver = None
+    for attempt in range(3):
+        try:
+            driver = webdriver.Chrome(service=service, options=opts)
+            driver.set_page_load_timeout(45)
+            driver.implicitly_wait(10)
+            return driver
+        except Exception as e:
+            if driver:
+                try:
+                    driver.quit()
+                except:
+                    pass
+            if attempt == 2:
+                raise e
+            time.sleep(2 ** attempt)
+    
+    return driver
+
+def safe_quit_driver(driver, process_id=None):
+    """
+    드라이버를 안전하게 종료하고 관련 프로세스를 정리합니다.
+    
+    Args:
+        driver: WebDriver 인스턴스
+        process_id: 특정 프로세스 ID (선택사항)
+    
+    Returns:
+        bool: 성공 여부
+    """
+    if not driver:
+        return True
+    
+    success = False
+    driver_pid = None
+    
+    try:
+        # 드라이버의 프로세스 ID 가져오기 (가능한 경우)
+        if hasattr(driver, 'service') and hasattr(driver.service, 'process'):
+            if driver.service.process:
+                driver_pid = driver.service.process.pid
+    except:
+        pass
+    
+    # 1단계: 정상적인 종료 시도
+    try:
+        driver.quit()
+        success = True
+        time.sleep(1)  # 프로세스 정리 시간 확보
+    except Exception as e:
+        logger.warning(f"드라이버 정상 종료 실패: {e}")
+    
+    # 2단계: 특정 프로세스만 정리 (전체 크롬 프로세스가 아닌)
+    if driver_pid or process_id:
+        try:
+            import psutil
+            target_pid = process_id or driver_pid
+            
+            if psutil.pid_exists(target_pid):
+                proc = psutil.Process(target_pid)
+                
+                # 자식 프로세스들도 찾아서 정리
+                children = []
+                try:
+                    children = proc.children(recursive=True)
+                except:
+                    pass
+                
+                # 자식 프로세스들 먼저 종료
+                for child in children:
+                    try:
+                        child.terminate()
+                    except:
+                        pass
+                
+                # 부모 프로세스 종료
+                try:
+                    proc.terminate()
+                    proc.wait(timeout=5)
+                except psutil.TimeoutExpired:
+                    try:
+                        proc.kill()
+                    except:
+                        pass
+                except:
+                    pass
+                    
+        except Exception as e:
+            logger.warning(f"프로세스 정리 중 오류: {e}")
+    
+    # 3단계: 가비지 컬렉션
+    try:
+        gc.collect()
+    except:
+        pass
+    
+    return success
+
+def validate_driver(driver):
+    """
+    드라이버가 정상적으로 작동하는지 검증합니다.
+    
+    Args:
+        driver: WebDriver 인스턴스
+        
+    Returns:
+        bool: 드라이버 유효성
+    """
+    if not driver:
+        return False
+    
+    try:
+        # 간단한 검증 작업들
+        driver.current_url
+        driver.title
+        return True
+    except Exception as e:
+        logger.warning(f"드라이버 검증 실패: {e}")
+        return False
 
 def get_server_name(server_num):
     """서버 번호를 서버 이름으로 변환"""
@@ -905,16 +1037,18 @@ def fetch_rank_page_legacy(driver, server_num, search_name="", div=1, high_perfo
                 if not driver_recreated:  # 한 번만 재생성 시도
                     logger.warning(f"드라이버 연결 오류 감지, 드라이버 재생성 시도: {str(e)[:100]}...")
                     try:
-                        # 기존 드라이버 종료 시도 (이미 종료되었을 수 있음)
-                        try:
-                            driver.quit()
-                        except:
-                            pass
+                        # 기존 드라이버 안전 종료
+                        safe_quit_driver(driver)
                             
-                        # 새 드라이버 생성
+                        # 새 드라이버 생성 및 검증
                         driver = get_driver(high_performance=high_performance_driver)
-                        driver.get(list_url)
-                        time.sleep(3)  # 새 드라이버 로드에 더 많은 시간 부여
+                        if validate_driver(driver):
+                            driver.get(list_url)
+                            time.sleep(3)  # 새 드라이버 로드에 더 많은 시간 부여
+                        else:
+                            safe_quit_driver(driver)
+                            driver = None
+                            raise Exception("새 드라이버 검증 실패")
                         driver_recreated = True
                         continue  # 드라이버 재생성 후 다시 시도
                     except Exception as recreate_error:
@@ -970,10 +1104,7 @@ def fetch_rank_page_legacy(driver, server_num, search_name="", div=1, high_perfo
             attempts += 1
             if attempts < MAX_FETCH_RETRIES:
                 if driver:
-                    try:
-                        driver.quit()
-                    except Exception as dq_err:
-                        logger.error(f"문제가 있는 드라이버 종료 오류: {dq_err}")
+                    safe_quit_driver(driver)
                 logger.info(f"서버 {server_name}용 드라이버 재생성 (시도 {attempts + 1}).")
                 driver = get_driver(high_performance=high_performance_driver)
                 time.sleep(5) 
@@ -1881,12 +2012,8 @@ def sequential_rank_crawl_worker(server_num, div=1):
                 inactive_time = time.time() - last_activity_time
                 if inactive_time > max_inactivity_time:
                     logger.warning(f"[활동없음] 서버 {server_name} 크롤러 {inactive_time/60:.1f}분 동안 활동 없음")
-                    # 드라이버 재시작
-                    try:
-                        if driver is not None:
-                            driver.quit()
-                    except Exception as e:
-                        logger.error(f"[드라이버종료오류] 서버 {server_name}: {e}")
+                    # 드라이버 안전 재시작
+                    safe_quit_driver(driver)
                         
                     # 드라이버 재생성
                     logger.info(f"[드라이버재시작] 서버 {server_name}")
@@ -2238,7 +2365,10 @@ def sequential_rank_crawl_worker(server_num, div=1):
                     "NewConnectionError", "Failed to establish a new connection",
                     "ConnectionRefusedError", "Connection refused",
                     "WebDriverException", "chrome not reachable",
-                    "StaleElementReferenceException"
+                    "StaleElementReferenceException", "TimeoutException",
+                    "NoSuchWindowException", "InvalidSessionIdException",
+                    "SessionNotCreatedException", "UnknownError",
+                    "chrome not reachable", "target window already closed"
                 ]
                 
                 is_connection_error = any(err in error_str for err in connection_errors)
@@ -2249,39 +2379,34 @@ def sequential_rank_crawl_worker(server_num, div=1):
                     logger.warning(f"드라이버 연결 오류 발생, 재시작 시도 {driver_restart_count}/{MAX_DRIVER_RESTARTS}")
                     
                     try:
-                        # 기존 드라이버 정리
-                        if driver:
-                            try:
-                                driver.quit()
-                            except:
-                                pass
-                        
-                        # 좀비 프로세스 정리
-                        try:
-                            import psutil
-                            for proc in psutil.process_iter(['pid', 'name']):
-                                if 'chrome' in proc.info['name'].lower():
-                                    try:
-                                        proc.terminate()
-                                    except:
-                                        pass
-                        except:
-                            pass
-                        
-                        # 메모리 정리 및 가비지 컬렉션
-                        gc.collect()
+                        # 안전한 드라이버 정리
+                        safe_quit_driver(driver)
                         
                         # 새 드라이버 생성 전 잠시 대기 (시스템 리소스 정리 시간)
                         wait_time = 5 + (driver_restart_count * 2)  # 재시작 횟수에 따라 대기 시간 증가
                         time.sleep(wait_time)
                         
                         # 새 드라이버 생성 (재시도 로직 포함)
+                        driver = None
                         for retry in range(3):
                             try:
                                 driver = get_driver(high_performance=True)
-                                logger.info(f"서버 {server_name} 워커의 드라이버 재생성 성공")
-                                break
+                                
+                                # 드라이버 검증
+                                if validate_driver(driver):
+                                    logger.info(f"서버 {server_name} 워커의 드라이버 재생성 및 검증 성공")
+                                    break
+                                else:
+                                    # 검증 실패 시 드라이버 정리 후 재시도
+                                    safe_quit_driver(driver)
+                                    driver = None
+                                    raise Exception("드라이버 검증 실패")
+                                    
                             except Exception as retry_error:
+                                if driver:
+                                    safe_quit_driver(driver)
+                                    driver = None
+                                    
                                 if retry < 2:
                                     logger.warning(f"드라이버 생성 재시도 {retry + 1}/3: {retry_error}")
                                     time.sleep(3 * (retry + 1))
@@ -2312,12 +2437,8 @@ def sequential_rank_crawl_worker(server_num, div=1):
             
         update_thread_status(thread_name, "종료됨")
         
-        # 드라이버 정리
-        if driver:
-            try:
-                driver.quit()
-            except Exception as e:
-                logger.warning(f"드라이버 종료 중 오류: {e}")
+        # 드라이버 안전 정리
+        safe_quit_driver(driver)
                 
         # 메모리 정리
         gc.collect()
