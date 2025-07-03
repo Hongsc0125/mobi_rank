@@ -8,8 +8,6 @@ from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
 import chromedriver_autoinstaller
-import base64
-from pathlib import Path
 
 logger = logging.getLogger(__name__)
 

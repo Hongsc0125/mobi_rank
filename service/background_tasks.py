@@ -168,7 +168,7 @@ def update_population_data():
                 print(f"[{current_time.strftime('%Y-%m-%d %H:%M:%S KST')}] 인구수 데이터 업데이트 완료")
                 
                 # 인구수 통계 수집 및 DB 저장
-                # update_population_statistics()
+                update_population_statistics()
             
             # 1시간 대기
             time.sleep(3600)  # 1시간 = 3600초

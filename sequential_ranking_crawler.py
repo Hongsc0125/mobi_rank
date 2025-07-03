@@ -6,13 +6,11 @@ import time
 from datetime import datetime, timedelta
 import re
 import signal
-import sys
 import gc
 import io
 import queue
 from queue import Empty
 from threading import Lock
-from typing import Dict, List, Optional, Tuple, Union
 
 # 로깅 설정 - 대시보드만 표시하도록 INFO 레벨로 설정하고 다른 로그는 제외
 # 기본 로깅 설정
@@ -41,7 +39,6 @@ from psycopg2.extensions import connection as pg_connection
 import psutil
 import requests
 from bs4 import BeautifulSoup
-# from fake_useragent import UserAgent  # 사용하지 않으므로 주석 처리
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
@@ -1012,105 +1009,6 @@ def fetch_rank_page(driver, server_num, search_name="", div=1, high_performance_
     """DOM 조작 기반으로 랭킹 데이터 가져오기 - 기존 함수명 호환성 유지"""
     return fetch_rank_page_dom(driver, server_num, search_name, div, high_performance_driver)
 
-def fetch_rank_page_legacy(driver, server_num, search_name="", div=1, high_performance_driver=True):
-    """기존 requests 기반 크롤링 함수 (백업용)"""
-    list_url = "https://mabinogimobile.nexon.com/Ranking/List?t=1"
-    api_url  = "https://mabinogimobile.nexon.com/Ranking/List/rankdata"
-    
-    # 서버 번호를 서버 이름으로 변환 (오류 수정: 참조 전에 서버 이름 정의)
-    server_name = get_server_name(server_num)
-    
-    attempts = 0
-    last_exception = None
-    driver_recreated = False
-    
-    while attempts < MAX_FETCH_RETRIES:
-        try:
-            # 드라이버 상태 확인 (연결 확인)
-            try:
-                # 이미 리스트 페이지에 있지 않은 경우에만 페이지 이동
-                if not driver.current_url.startswith(list_url):
-                    driver.get(list_url)
-                    time.sleep(2) # 페이지 로드 대기
-            except Exception as e:
-                # 드라이버 연결 문제 발생 시 드라이버 재생성
-                if not driver_recreated:  # 한 번만 재생성 시도
-                    logger.warning(f"드라이버 연결 오류 감지, 드라이버 재생성 시도: {str(e)[:100]}...")
-                    try:
-                        # 기존 드라이버 안전 종료
-                        safe_quit_driver(driver)
-                            
-                        # 새 드라이버 생성 및 검증
-                        driver = get_driver(high_performance=high_performance_driver)
-                        if validate_driver(driver):
-                            driver.get(list_url)
-                            time.sleep(3)  # 새 드라이버 로드에 더 많은 시간 부여
-                        else:
-                            safe_quit_driver(driver)
-                            driver = None
-                            raise Exception("새 드라이버 검증 실패")
-                        driver_recreated = True
-                        continue  # 드라이버 재생성 후 다시 시도
-                    except Exception as recreate_error:
-                        logger.error(f"드라이버 재생성 실패: {recreate_error}")
-                        raise  # 재생성도 실패하면 다음 예외 처리로 이동
-
-            # 세션 가져오기
-            sess = requests.Session()
-            for ck in driver.get_cookies():
-                sess.cookies.set(ck['name'], ck['value'])
-                
-            # 런타임 IP 차단 방지를 위한 UserAgent 랜덤화 (fake_useragent 사용)
-            try:
-                random_ua = UserAgent().random
-                logger.debug(f"랜덤 UserAgent 사용: {random_ua[:30]}...")
-            except Exception as ua_error:
-                # UserAgent 생성 실패 시 드라이버 UA 사용
-                random_ua = driver.execute_script("return navigator.userAgent;")
-                logger.warning(f"UserAgent 랜덤화 실패, 기본 UA 사용: {ua_error}")
-                
-            # [디버깅] API 호출 정보 출력
-            # logger.info(f"[디버깅] API 호출 시작: 서버 {server_name}, 검색어 '{search_name}'")
-                
-            headers = {
-                "User-Agent":          random_ua,  # 랜덤 UserAgent 사용
-                "Accept":              "*/*",
-                "Referer":             list_url,
-                "X-Requested-With":    "XMLHttpRequest",
-                "Origin":              "https://mabinogimobile.nexon.com",
-                "Content-Type":        "application/x-www-form-urlencoded; charset=UTF-8",
-            }
-            data = {
-                "t":       str(div),
-                "s":       server_num,
-                "c":       "0",
-                "search":  search_name,
-            }
-
-            # API 호출 시도
-            logger.debug(f"API 호출 시도: 서버 {server_name}, 검색어 '{search_name}'")
-            
-            resp = sess.post(api_url, headers=headers, data=data)
-            resp.raise_for_status()
-            
-            # API 응답 성공
-            logger.debug(f"API 응답 성공: 서버 {server_name}, 검색어 '{search_name}'")
-            
-            return resp.text, driver
-
-        except (requests.exceptions.RequestException, WebDriverException) as e:
-            logger.debug(f"캐릭터 검색 실패: 서버 {server_name}, 검색어 '{search_name}', 시도 {attempts + 1}/{MAX_FETCH_RETRIES}. 오류: {e}")
-            last_exception = e
-            attempts += 1
-            if attempts < MAX_FETCH_RETRIES:
-                if driver:
-                    safe_quit_driver(driver)
-                logger.info(f"서버 {server_name}용 드라이버 재생성 (시도 {attempts + 1}).")
-                driver = get_driver(high_performance=high_performance_driver)
-                time.sleep(5) 
-            else:
-                logger.debug(f"캐릭터 검색 실패: 서버 {server_name}, 검색어 '{search_name}'에 대한 모든 {MAX_FETCH_RETRIES}번의 재시도 실패. 마지막 오류: {last_exception}")
-                return None, driver
 
 def parse_rank_range(html: str):
     soup = BeautifulSoup(html, 'html.parser')

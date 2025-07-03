@@ -231,34 +231,6 @@ def get_all_ranks_data(server, character):
     # 없으면 None 반환
     return None
 
-def get_980_data(server_name):
-    """Get characters beyond rank 980 for exploration"""
-    db = SessionLocal()
-    try:
-        query = text("""
-            SELECT server_name, character_name, MAX(retrieved_at) as last_seen
-            FROM mabinogi_ranking
-            WHERE server_name = :server
-            AND rank_value > 980
-            GROUP BY server_name, character_name
-            ORDER BY server_name, last_seen DESC
-            LIMIT 10000
-        """)
-        
-        rows = db.execute(query, {'server': server_name}).fetchall()
-        
-        # Convert to list of dicts
-        result = []
-        for row in rows:
-            result.append({
-                'server_name': row[0],
-                'character_name': row[1],
-                'last_seen': row[2].strftime('%Y-%m-%d %H:%M:%S') if row[2] else 'Never'
-            })
-            
-        return result
-    finally:
-        db.close()
 
 def delete_character_data(server, character, div=None):
     """
