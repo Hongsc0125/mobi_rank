@@ -14,7 +14,7 @@ import os
 from datetime import datetime
 from service.population_statistics import update_population_statistics, generate_class_pie_chart, get_latest_class_chart
 from service.html_image_converter import html_to_image
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse
 
 # Configure logging
 import sys
@@ -251,8 +251,60 @@ def convert_html_to_image(req: HtmlImageReq):
         logger.error(f"HTML 테이블 이미지 변환 중 오류 발생: {str(e)}")
         raise HTTPException(status_code=500, detail=f"HTML 테이블 이미지 변환 오류: {str(e)}")
 
+# 랭킹 캐시 상태 확인 엔드포인트
+@app.get("/cache-status", summary="고속 랭킹 캐시 상태 확인")
+def get_cache_status():
+    try:
+        from service.fast_ranking_service import get_cache_status
+        status = get_cache_status()
+        return {
+            "success": True,
+            "cache_status": status,
+            "message": "캐시 상태 조회 성공"
+        }
+    except Exception as e:
+        logger.error(f"캐시 상태 조회 중 오류: {e}")
+        return {
+            "success": False,
+            "error": str(e),
+            "message": "캐시 상태 조회 실패"
+        }
+
 # Start background tasks when the server starts
 @app.on_event("startup")
 async def startup_event():
     start_background_tasks()
     logger.info("Background tasks started")
+    
+    # 고속 랭킹 캐시 초기화 (백그라운드에서)
+    import threading
+    from service.persistent_ranking_cache import initialize_ranking_cache
+    
+    def init_cache():
+        try:
+            logger.info("고속 랭킹 캐시 초기화 시작...")
+            success = initialize_ranking_cache()
+            if success:
+                logger.info("고속 랭킹 캐시 초기화 성공")
+            else:
+                logger.warning("고속 랭킹 캐시 초기화 실패, 기존 방식 사용")
+        except Exception as e:
+            logger.error(f"고속 랭킹 캐시 초기화 중 오류: {e}")
+    
+    cache_thread = threading.Thread(target=init_cache, daemon=True)
+    cache_thread.start()
+
+# Shutdown event handler
+@app.on_event("shutdown")
+async def shutdown_event():
+    logger.info("서버 종료 중...")
+    
+    # 고속 랭킹 캐시 정리
+    try:
+        from service.persistent_ranking_cache import shutdown_ranking_cache
+        shutdown_ranking_cache()
+        logger.info("고속 랭킹 캐시 정리 완료")
+    except Exception as e:
+        logger.error(f"고속 랭킹 캐시 정리 중 오류: {e}")
+    
+    logger.info("서버 종료 완료")

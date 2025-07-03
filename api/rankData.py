@@ -1,4 +1,5 @@
 from service.full_data import fetch_all_ranks, parse_rank_html
+from service.fast_ranking_service import fetch_all_ranks_fast, is_fast_search_available
 from service.db import get_character_data, has_recent_data, get_all_ranks_data
 from service.async_db import async_insert_all_rank_data
 import logging
@@ -56,7 +57,14 @@ def rank_data(server=None, name=""):
         
         # 캐시에 없으면 세 가지 랭킹(전투력, 매력, 생활력) 데이터를 동시에 가져옴
         logger.info(f"서버 '{server}'에서 캐릭터 '{name}'의 모든 랭킹 동시 조회 시작")
-        all_ranks_data = fetch_all_ranks(server, name)
+        
+        # 고속 캐시가 사용 가능하면 우선 사용, 아니면 기존 방식 사용
+        if is_fast_search_available():
+            logger.info("고속 캐시 검색 사용")
+            all_ranks_data = fetch_all_ranks_fast(server, name)
+        else:
+            logger.info("기존 방식 검색 사용")
+            all_ranks_data = fetch_all_ranks(server, name)
         
         # 전투력 데이터가 비어있는지 확인
         combat_data = all_ranks_data.get("ranks", {}).get("전투력", {}).get("data", [])
