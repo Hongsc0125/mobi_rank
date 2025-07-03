@@ -355,7 +355,7 @@ class PersistentRankingCache:
                     
                     # 결과 파싱
                     page_source = driver.page_source
-                    parsed_data = parse_rank_html(page_source, server)
+                    parsed_data = parse_rank_html(page_source)
                     
                     results[rank_names[rank_type]] = {
                         "data": parsed_data.get("data", []),
