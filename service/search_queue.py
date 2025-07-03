@@ -146,28 +146,33 @@ class SearchQueueManager:
                 # 타임아웃된 요청들을 먼저 정리
                 self._cleanup_timeout_requests(db)
                 
-                # 우선순위가 높은 대기 중인 요청 가져오기
+                # 우선순위가 높은 대기 중인 요청 가져오기 (FOR UPDATE 제거)
                 request = db.execute(text("""
                     SELECT request_id, server, character_name, priority, created_at
                     FROM search_request_queue
-                    WHERE status = 'pending'
+                    WHERE status = :pending_status
                     ORDER BY priority ASC, created_at ASC
                     LIMIT 1
-                    FOR UPDATE SKIP LOCKED
-                """)).fetchone()
+                """), {'pending_status': 'pending'}).fetchone()
                 
                 if not request:
                     return None
                 
-                # 상태를 처리 중으로 변경
-                db.execute(text("""
+                # 상태를 처리 중으로 변경 (원자적 업데이트)
+                update_result = db.execute(text("""
                     UPDATE search_request_queue
                     SET status = 'processing', started_at = :started_at
-                    WHERE request_id = :request_id
+                    WHERE request_id = :request_id AND status = 'pending'
                 """), {
                     'request_id': request.request_id,
                     'started_at': get_current_time()
                 })
+                
+                # 업데이트가 실제로 발생했는지 확인
+                if update_result.rowcount == 0:
+                    # 다른 워커가 이미 이 요청을 가져갔을 가능성
+                    logger.debug(f"요청 {request.request_id}이 이미 다른 워커에 의해 처리 중")
+                    return None
                 
                 db.commit()
                 
@@ -187,8 +192,12 @@ class SearchQueueManager:
     
     def complete_request(self, request_id: str, result: Dict[str, Any]):
         """요청 처리 완료"""
+        import json
         try:
             with SessionLocal() as db:
+                # dict를 JSON 문자열로 변환
+                result_json = json.dumps(result, ensure_ascii=False, default=str)
+                
                 db.execute(text("""
                     UPDATE search_request_queue
                     SET status = 'completed', 
@@ -198,7 +207,7 @@ class SearchQueueManager:
                 """), {
                     'request_id': request_id,
                     'completed_at': get_current_time(),
-                    'result': result
+                    'result': result_json
                 })
                 
                 db.commit()
@@ -258,6 +267,7 @@ class SearchQueueManager:
     
     def get_request_status(self, request_id: str) -> Optional[Dict[str, Any]]:
         """요청 상태 조회"""
+        import json
         try:
             with SessionLocal() as db:
                 request = db.execute(text("""
@@ -271,6 +281,19 @@ class SearchQueueManager:
                 if not request:
                     return None
                 
+                # JSON 문자열을 Python dict로 변환
+                result_data = None
+                if request.result:
+                    try:
+                        if isinstance(request.result, str):
+                            result_data = json.loads(request.result)
+                        else:
+                            # 이미 dict인 경우 (하위 호환성)
+                            result_data = request.result
+                    except (json.JSONDecodeError, TypeError) as e:
+                        logger.warning(f"결과 JSON 파싱 실패 (request_id: {request_id}): {e}")
+                        result_data = request.result  # 원본 데이터 그대로 반환
+                
                 return {
                     'request_id': str(request.request_id),
                     'server': request.server,
@@ -279,7 +302,7 @@ class SearchQueueManager:
                     'created_at': request.created_at,
                     'started_at': request.started_at,
                     'completed_at': request.completed_at,
-                    'result': request.result,
+                    'result': result_data,
                     'error_message': request.error_message,
                     'retry_count': request.retry_count
                 }
