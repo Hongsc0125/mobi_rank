@@ -57,12 +57,15 @@ def get_driver_for_cache(high_performance=True):
     opts.add_argument("--no-first-run")
     opts.add_argument("--disable-background-networking")
     
+    # Bot 감지 회피 옵션
+    opts.add_argument("--disable-blink-features=AutomationControlled")
+    opts.add_argument("--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36")
+    
     # 로그 차단
-    opts.add_experimental_option("excludeSwitches", ["enable-logging"])
+    opts.add_experimental_option("excludeSwitches", ["enable-logging", "enable-automation"])
     opts.add_experimental_option('useAutomationExtension', False)
     
     if high_performance:
-        opts.add_argument("--disable-blink-features=AutomationControlled")
         opts.add_argument("--disable-default-apps")
         opts.add_argument("--disable-background-timer-throttling")
     
@@ -163,10 +166,20 @@ class PersistentRankingCache:
                     url = f"https://mabinogimobile.nexon.com/Ranking/List?t={rank_type}"
                     driver.get(url)
                     
-                    # 페이지 로딩 대기
-                    wait = WebDriverWait(driver, 20)
+                    # 페이지 로딩 대기 및 Cloudflare 체크
+                    wait = WebDriverWait(driver, 30)
                     wait.until(EC.presence_of_element_located((By.TAG_NAME, "body")))
-                    time.sleep(2)
+                    
+                    # Cloudflare 보호 페이지 대기 (최대 15초)
+                    for retry in range(15):
+                        if "잠시만 기다리십시오" in driver.title or "Just a moment" in driver.title:
+                            logger.info(f"{rank_name} - Cloudflare 보호 페이지 감지, 대기 중... ({retry + 1}/15)")
+                            time.sleep(1)
+                        else:
+                            break
+                    
+                    # 추가 대기 시간
+                    time.sleep(5)
                     
                     # 초기 상태 검증
                     if self._verify_page_loaded(driver):
@@ -182,6 +195,10 @@ class PersistentRankingCache:
                     logger.error(f"{rank_name} 랭킹 페이지 초기화 실패: {e}", exc_info=True)
                     if 'driver' in locals():
                         safe_quit_driver_cache(driver)
+                
+                # 다음 드라이버 생성 전 잠시 대기 (동시 요청 방지)
+                if rank_type < 3:  # 마지막이 아니면 대기
+                    time.sleep(10)
             
             self.initialized = (success_count > 0)
             self.running = self.initialized
@@ -198,14 +215,46 @@ class PersistentRankingCache:
     def _verify_page_loaded(self, driver):
         """페이지가 정상적으로 로드되었는지 확인"""
         try:
-            # 랭킹 리스트 요소 확인
-            element = driver.find_element(By.CSS_SELECTOR, "div[data-mm-rankinglist], ul.list")
-            logger.info(f"페이지 로드 검증 성공: {element.tag_name} 요소 발견")
-            return True
+            # 먼저 타이틀로 보호 페이지 확인
+            if "잠시만 기다리십시오" in driver.title or "Just a moment" in driver.title:
+                logger.warning(f"보호 페이지 감지: {driver.title}")
+                return False
+            
+            # 랭킹 리스트 요소 확인 (더 많은 셀렉터 시도)
+            selectors = [
+                "div[data-mm-rankinglist]",
+                "ul.list", 
+                ".ranking_list",
+                ".list_area",
+                "[data-mm-rankinglist]"
+            ]
+            
+            for selector in selectors:
+                try:
+                    element = driver.find_element(By.CSS_SELECTOR, selector)
+                    logger.info(f"페이지 로드 검증 성공: {selector} 요소 발견")
+                    return True
+                except:
+                    continue
+                    
+            # 모든 셀렉터 실패 시 페이지 소스 체크
+            page_source = driver.page_source
+            if "ranking" in page_source.lower() and "list" in page_source.lower():
+                logger.info("페이지 소스에서 랭킹 관련 내용 발견")
+                return True
+                
+            raise Exception("모든 검증 방법 실패")
+            
         except Exception as e:
             logger.error(f"페이지 로드 검증 실패: {e}")
             logger.error(f"현재 URL: {driver.current_url}")
             logger.error(f"페이지 타이틀: {driver.title}")
+            # 페이지 소스 일부도 로깅 (처음 200자)
+            try:
+                source_preview = driver.page_source[:200].replace('\n', ' ')
+                logger.error(f"페이지 소스 미리보기: {source_preview}")
+            except:
+                pass
             return False
     
     def _start_health_monitor(self):
