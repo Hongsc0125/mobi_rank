@@ -316,72 +316,56 @@ class PersistentRankingCache:
     
     def fast_search(self, server, character_name):
         """
-        지속적인 페이지를 활용한 고속 검색
+        지속적인 페이지를 활용한 고속 검색 - 기존 방식과 동일한 결과 반환
         
         Args:
             server: 서버명
             character_name: 캐릭터명
             
         Returns:
-            dict: 모든 랭킹 타입의 검색 결과
+            dict: 기존 fetch_all_ranks와 동일한 구조의 결과
         """
         if not self.initialized or not self.running:
             logger.error("랭킹 페이지 캐시가 초기화되지 않음")
             return None
             
+        from service.full_data import fetch_rank_via_dom
+        
         results = {}
         retrieved_at = datetime.now(KST).strftime('%Y-%m-%d %H:%M:%S')
         
         rank_names = {1: "전투력", 2: "매력", 3: "생활력"}
         
-        with self.lock:
-            for rank_type in [1, 2, 3]:
-                if rank_type not in self.drivers:
-                    logger.warning(f"랭킹 타입 {rank_type} 드라이버 없음, 건너뜀")
-                    continue
-                    
-                try:
-                    driver = self.drivers[rank_type]
-                    
-                    # 서버 변경 (필요한 경우만)
-                    if self.last_server.get(rank_type) != server:
-                        logger.info(f"{rank_names[rank_type]} 서버 변경: {self.last_server.get(rank_type)} -> {server}")
-                        self._select_server_fast(driver, server)
-                        self.last_server[rank_type] = server
-                        time.sleep(2)  # 서버 변경 후 충분한 대기시간
-                    else:
-                        logger.info(f"{rank_names[rank_type]} 서버 변경 불필요: 이미 {server} 선택됨")
-                    
-                    # 캐릭터 검색
-                    logger.info(f"{rank_names[rank_type]} 캐릭터 '{character_name}' 검색 시작")
-                    self._search_character_fast(driver, character_name)
-                    time.sleep(3)  # 검색 결과 로딩 대기시간 증가
-                    
-                    # 결과 파싱
-                    page_source = driver.page_source
-                    parsed_data = parse_rank_html(page_source)
-                    
-                    results[rank_names[rank_type]] = {
-                        "data": parsed_data,  # parse_rank_html은 이미 list를 반환
-                        "retrieved_at": retrieved_at
-                    }
-                    
-                    logger.info(f"{rank_names[rank_type]} 검색 완료: {len(parsed_data if isinstance(parsed_data, list) else [])}개 결과")
-                    
-                except Exception as e:
-                    logger.error(f"랭킹 타입 {rank_type} 검색 중 오류: {e}")
-                    results[rank_names[rank_type]] = {
-                        "data": [],
-                        "retrieved_at": retrieved_at
-                    }
-                    
-                    # 오류 발생시 드라이버 재생성 시도
-                    try:
-                        self._recreate_driver(rank_type)
-                    except:
-                        pass
+        # 각 랭킹 타입별로 기존 방식으로 검색
+        for rank_type in [1, 2, 3]:
+            try:
+                logger.info(f"{rank_names[rank_type]} 랭킹 직접 검색 시작")
+                
+                # 기존 fetch_rank_via_dom 방식 사용 (페이지 열고 검색하고 파싱)
+                page_source = fetch_rank_via_dom(server, character_name, rank_type)
+                parsed_data = parse_rank_html(page_source)
+                
+                results[rank_names[rank_type]] = {
+                    "type": rank_names[rank_type],
+                    "data": parsed_data,
+                    "retrieved_at": retrieved_at
+                }
+                
+                logger.info(f"{rank_names[rank_type]} 검색 완료: {len(parsed_data)}개 결과")
+                
+            except Exception as e:
+                logger.error(f"랭킹 타입 {rank_type} 검색 중 오류: {e}")
+                results[rank_names[rank_type]] = {
+                    "type": rank_names[rank_type],
+                    "data": [],
+                    "error": str(e),
+                    "retrieved_at": retrieved_at
+                }
         
+        # 기존 fetch_all_ranks와 동일한 구조로 반환
         return {
+            "character": character_name,
+            "server": server,
             "ranks": results,
             "retrieved_at": retrieved_at
         }
