@@ -867,8 +867,8 @@ def crawl_by_character_search_dom_safe(driver, server_num, character_list, div=1
         logger.error(f"서버 {server_name} 안전 크롤링 실패: {e}")
         return all_data
 
-def get_character_list_from_db(server_name, exclude_recent_hours=1):
-    """DB에서 해당 서버의 캐릭터 목록 가져오기 (최근 업데이트된 캐릭터 제외)"""
+def get_character_list_from_db(server_name):
+    """DB에서 해당 서버의 캐릭터 목록 가져오기 (오늘 업데이트된 캐릭터 제외)"""
     from service.db_session import SessionLocal, get_current_time
     from sqlalchemy import text
     from datetime import timedelta
@@ -876,38 +876,39 @@ def get_character_list_from_db(server_name, exclude_recent_hours=1):
     try:
         db = SessionLocal()
         
-        # 현재 시간에서 지정된 시간을 뺀 시점 (KST 기준)
-        cutoff_time = get_current_time() - timedelta(hours=exclude_recent_hours)
+        # 오늘 00:00:00 KST 시점 계산
+        current_time = get_current_time()
+        today_start = current_time.replace(hour=0, minute=0, second=0, microsecond=0)
         
         query = text("""
-            SELECT character_name, MIN(retrieved_at) as earliest_retrieved_at
+            SELECT character_name, MAX(retrieved_at) as latest_retrieved_at
             FROM mabinogi_ranking 
             WHERE server_name = :server_name 
-            AND (retrieved_at < :cutoff_time OR retrieved_at IS NULL)
             AND div = 1
             GROUP BY character_name
-            ORDER BY earliest_retrieved_at ASC NULLS FIRST, character_name ASC
+            HAVING MAX(retrieved_at) < :today_start OR MAX(retrieved_at) IS NULL
+            ORDER BY latest_retrieved_at ASC NULLS FIRST, character_name ASC
         """)
         result = db.execute(query, {
             'server_name': server_name,
-            'cutoff_time': cutoff_time
+            'today_start': today_start
         }).fetchall()
         character_list = [row[0] for row in result]
         db.close()
         
-        logger.info(f"서버 {server_name}의 DB 캐릭터 목록: {len(character_list)}개 (최근 {exclude_recent_hours}시간 내 업데이트 제외)")
+        logger.info(f"서버 {server_name}의 DB 캐릭터 목록: {len(character_list)}개 (오늘 {today_start.strftime('%Y-%m-%d')} 이후 업데이트 제외)")
         return character_list
         
     except Exception as e:
         logger.error(f"서버 {server_name} 캐릭터 목록 조회 실패: {e}")
         return []
 
-def get_characters_to_update(server_name, exclude_recent_hours=1):
-    """업데이트가 필요한 캐릭터 목록 조회 (DB 캐릭터만, 패턴 제외)"""
-    # DB에서 기존 캐릭터 목록만 (최근 업데이트된 캐릭터 제외)
-    db_characters = get_character_list_from_db(server_name, exclude_recent_hours)
+def get_characters_to_update(server_name):
+    """업데이트가 필요한 캐릭터 목록 조회 (DB 캐릭터만, 오늘 업데이트 제외)"""
+    # DB에서 기존 캐릭터 목록만 (오늘 업데이트된 캐릭터 제외)
+    db_characters = get_character_list_from_db(server_name)
     
-    logger.info(f"서버 {server_name} 업데이트 대상 캐릭터: {len(db_characters)}개 (최근 {exclude_recent_hours}시간 내 업데이트 제외)")
+    logger.info(f"서버 {server_name} 업데이트 대상 캐릭터: {len(db_characters)}개 (오늘 업데이트 제외)")
     return db_characters
 
 def fast_sequential_crawl_worker(server_num, div=1):
@@ -965,11 +966,11 @@ def fast_sequential_crawl_worker(server_num, div=1):
             cycle_count += 1
             logger.debug(f"서버 {server_name} 크롤링 사이클 #{cycle_count} 시작")
             
-            # 현재 업데이트가 필요한 캐릭터 목록 조회
-            character_list = get_characters_to_update(server_name, exclude_recent_hours=1)
+            # 현재 업데이트가 필요한 캐릭터 목록 조회 (오늘 업데이트 안된 캐릭터)
+            character_list = get_characters_to_update(server_name)
             
             if not character_list:
-                logger.info(f"서버 {server_name} 업데이트 필요한 캐릭터 없음, 1시간 대기 후 재조회")
+                logger.info(f"서버 {server_name} 오늘 업데이트 필요한 캐릭터 없음, 1시간 대기 후 재조회")
                 time.sleep(3600)  # 1시간 대기
                 continue
             
