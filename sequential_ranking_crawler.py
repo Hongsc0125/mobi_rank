@@ -38,7 +38,32 @@ from psycopg2.extensions import connection as pg_connection
 # 서드파티 라이브러리
 import psutil
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 from bs4 import BeautifulSoup
+
+# HTTP 연결 풀 사이즈 증가 (전역 설정)
+import urllib3
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+# 전역 urllib3 연결 풀 설정
+from urllib3.poolmanager import PoolManager
+from urllib3.util.connection import create_connection
+
+# urllib3 기본 풀 사이즈 증가
+urllib3.poolmanager.DEFAULT_POOLCLASS = lambda *args, **kwargs: PoolManager(
+    num_pools=50, maxsize=100, *args, **kwargs
+)
+
+# requests 세션 설정
+session = requests.Session()
+adapter = HTTPAdapter(
+    pool_connections=10,
+    pool_maxsize=20,
+    max_retries=Retry(total=3, backoff_factor=0.3)
+)
+session.mount('http://', adapter)
+session.mount('https://', adapter)
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
