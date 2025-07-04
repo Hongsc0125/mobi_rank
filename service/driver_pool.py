@@ -127,7 +127,7 @@ class ChromeDriverPool:
         service.log_path = "NUL" if os.name == "nt" else "/dev/null"
         
         # 재시도 로직 추가
-        max_retries = 5
+        max_retries = 3
         for attempt in range(max_retries):
             try:
                 driver = webdriver.Chrome(service=service, options=opts)
@@ -139,56 +139,41 @@ class ChromeDriverPool:
                 # webdriver 속성 숨기기 (anti-detection)
                 driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
                 
-                # 연결 테스트
-                driver.get("data:text/html,<html><body>test</body></html>")
+                # 연결 테스트 (간단한 속성 확인만)
+                _ = driver.session_id
                 
                 return driver
             except Exception as e:
                 logger.warning(f"드라이버 생성 시도 {attempt + 1}/{max_retries} 실패: {e}")
                 if attempt < max_retries - 1:
-                    time.sleep(3 * (attempt + 1))  # 점진적 대기 (3초씩 증가)
+                    time.sleep(2 * (attempt + 1))  # 점진적 대기 (2초씩 증가)
                 else:
                     raise
     
     def get_driver(self, timeout=30):
         """사용 가능한 드라이버 가져오기"""
-        max_attempts = 3
-        for attempt in range(max_attempts):
-            try:
-                # 대기열에서 드라이버 가져오기 (타임아웃 설정)
-                driver = self.driver_queue.get(block=True, timeout=timeout)
+        try:
+            # 대기열에서 드라이버 가져오기 (타임아웃 설정)
+            driver = self.driver_queue.get(block=True, timeout=timeout)
+            
+            # 드라이버가 정상 작동하는지 확인
+            if not self._is_driver_alive(driver):
+                logger.warning(f"[{get_current_time().strftime('%Y-%m-%d %H:%M:%S KST')}] 비정상 드라이버 감지, 새 드라이버 생성")
+                try:
+                    self._quit_driver(driver)
+                except:
+                    pass
+                driver = self._create_new_driver()
+            
+            # 사용 중 목록에 추가
+            with self.lock:
+                self.in_use[driver] = get_current_time()
                 
-                # 드라이버가 정상 작동하는지 확인
-                if not self._is_driver_alive(driver):
-                    logger.warning(f"[{get_current_time().strftime('%Y-%m-%d %H:%M:%S KST')}] 비정상 드라이버 감지, 새 드라이버 생성")
-                    try:
-                        self._quit_driver(driver)
-                    except:
-                        pass
-                    driver = self._create_new_driver()
-                
-                # 사용 중 목록에 추가
-                with self.lock:
-                    self.in_use[driver] = get_current_time()
-                    
-                return driver
-            except queue.Empty:
-                if attempt < max_attempts - 1:
-                    logger.warning(f"[{get_current_time().strftime('%Y-%m-%d %H:%M:%S KST')}] 드라이버 풀 타임아웃 (시도 {attempt + 1}/{max_attempts}), 재시도 중...")
-                    time.sleep(2)
-                    continue
-                else:
-                    logger.error(f"[{get_current_time().strftime('%Y-%m-%d %H:%M:%S KST')}] 드라이버 풀 타임아웃: 사용 가능한 드라이버 없음")
-                    # 긴급 새 드라이버 생성
-                    return self._create_new_driver()
-            except Exception as e:
-                logger.error(f"[{get_current_time().strftime('%Y-%m-%d %H:%M:%S KST')}] 드라이버 가져오기 실패 (시도 {attempt + 1}/{max_attempts}): {e}")
-                if attempt < max_attempts - 1:
-                    time.sleep(2)
-                    continue
-                else:
-                    # 긴급 새 드라이버 생성
-                    return self._create_new_driver()
+            return driver
+        except queue.Empty:
+            logger.error(f"[{get_current_time().strftime('%Y-%m-%d %H:%M:%S KST')}] 드라이버 풀 타임아웃: 사용 가능한 드라이버 없음")
+            # 긴급 새 드라이버 생성
+            return self._create_new_driver()
     
     def release_driver(self, driver):
         """드라이버 풀에 반환"""
