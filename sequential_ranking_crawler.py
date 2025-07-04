@@ -901,9 +901,24 @@ def fast_sequential_crawl_worker(server_num, div=1):
         from selenium.webdriver.support.ui import WebDriverWait
         from selenium.webdriver.support import expected_conditions as EC
         
-        # 전용 드라이버 획득 (재사용)
+        # 전용 드라이버 획득 (재사용) - 안정성 강화
         driver_pool = get_driver_pool()
-        driver = driver_pool.get_driver(timeout=30)
+        driver = None
+        
+        # 드라이버 획득 재시도 로직
+        for attempt in range(3):
+            try:
+                driver = driver_pool.get_driver(timeout=30)
+                # 드라이버 연결 테스트
+                driver.current_url
+                break
+            except Exception as e:
+                logger.warning(f"서버 {server_name} 드라이버 획득 실패 (시도 {attempt + 1}/3): {e}")
+                if attempt < 2:
+                    time.sleep(5)
+                    continue
+                else:
+                    raise Exception(f"드라이버 획득 최종 실패: {e}")
         
         # 랭킹 페이지로 이동 (한 번만)
         list_url = f"https://mabinogimobile.nexon.com/Ranking/List?t={div}"
