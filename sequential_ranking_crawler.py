@@ -946,41 +946,76 @@ def fast_sequential_crawl_worker(server_num, div=1):
                 
                 # 배치 내 캐릭터들 빠르게 처리 (전용 드라이버 재사용)
                 for idx, character_name in enumerate(batch_characters):
-                    try:
-                        # 고속 검색: 같은 드라이버에서 계속 검색만 변경
-                        search_character(driver, character_name)
-                        time.sleep(1.5)  # 검색 결과 로딩 대기
-                        
-                        # 결과 확인
-                        wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "div[data-mm-rankinglist], ul.list")))
-                        time.sleep(1)
-                        
-                        html_data = driver.page_source
-                        
-                        if html_data:
-                            # HTML 파싱
-                            parsed_data = parse_rank_html(html_data)
-                            if parsed_data:
-                                # DB 저장 (캐시 무시하고 강제 업데이트)
-                                result = insert_data(parsed_data, server=server_name, div=div, force_update=True)
-                                if result.get('success', False) and result.get('rows_affected', 0) > 0:
-                                    cycle_success += 1
-                                    total_success += 1
+                    max_retries = 3
+                    success = False
+                    
+                    for retry in range(max_retries):
+                        try:
+                            # 고속 검색: 같은 드라이버에서 계속 검색만 변경
+                            search_character(driver, character_name)
+                            time.sleep(1.5)  # 검색 결과 로딩 대기
+                            
+                            # 결과 확인
+                            wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "div[data-mm-rankinglist], ul.list")))
+                            time.sleep(1)
+                            
+                            html_data = driver.page_source
+                            
+                            if html_data:
+                                # HTML 파싱
+                                parsed_data = parse_rank_html(html_data)
+                                if parsed_data:
+                                    # DB 저장 (캐시 무시하고 강제 업데이트)
+                                    result = insert_data(parsed_data, server=server_name, div=div, force_update=True)
+                                    if result.get('success', False) and result.get('rows_affected', 0) > 0:
+                                        cycle_success += 1
+                                        total_success += 1
+                                        success = True
+                                        break
+                                    else:
+                                        cycle_fail += 1
+                                        success = True
+                                        break
+                                else:
+                                    if retry < max_retries - 1:
+                                        logger.warning(f"서버 {server_name} '{character_name}' 파싱 실패 (재시도 {retry + 1}/{max_retries})")
+                                        time.sleep(1)
+                                        continue
+                                    else:
+                                        cycle_fail += 1
+                            else:
+                                if retry < max_retries - 1:
+                                    logger.warning(f"서버 {server_name} '{character_name}' HTML 데이터 없음 (재시도 {retry + 1}/{max_retries})")
+                                    time.sleep(1)
+                                    continue
                                 else:
                                     cycle_fail += 1
+                                    
+                            # 매우 짧은 대기 (거의 없음)
+                            time.sleep(0.05)
+                            
+                        except Exception as e:
+                            if retry < max_retries - 1:
+                                logger.warning(f"서버 {server_name} '{character_name}' 처리 오류 (재시도 {retry + 1}/{max_retries}): {str(e)[:50]}...")
+                                time.sleep(2)
+                                continue
                             else:
                                 cycle_fail += 1
-                        else:
-                            cycle_fail += 1
-                            
-                        # 매우 짧은 대기 (거의 없음)
-                        time.sleep(0.05)
-                        
-                    except Exception as e:
-                        cycle_fail += 1
-                        logger.warning(f"서버 {server_name} '{character_name}' 처리 오류: {str(e)[:50]}...")
-                        time.sleep(0.1)
-                        continue
+                                logger.error(f"서버 {server_name} '{character_name}' 처리 최종 실패: {str(e)[:50]}...")
+                                break
+                    
+                    if not success:
+                        # 드라이버 재시작 시도
+                        try:
+                            driver_pool.release_driver(driver)
+                            driver = driver_pool.get_driver(timeout=30)
+                            driver.get(list_url)
+                            select_server_option(driver, server_name)
+                            time.sleep(2)
+                            logger.info(f"서버 {server_name} 드라이버 재시작 완료")
+                        except Exception as restart_e:
+                            logger.error(f"서버 {server_name} 드라이버 재시작 실패: {restart_e}")
+                            time.sleep(5)
                 
                 # 배치 완료 로깅
                 batch_success_rate = (cycle_success / (batch_end)) * 100 if batch_end > 0 else 0
@@ -997,6 +1032,9 @@ def fast_sequential_crawl_worker(server_num, div=1):
                 
     except Exception as e:
         logger.error(f"서버 {server_name} 순환 크롤링 실패: {e}")
+        # 크리티컬 에러 시 재시작 시도
+        time.sleep(30)
+        logger.info(f"서버 {server_name} 30초 후 크롤링 재시작 시도")
     finally:
         # 전용 드라이버 반환
         if 'driver' in locals() and driver:
