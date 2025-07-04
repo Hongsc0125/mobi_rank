@@ -94,6 +94,8 @@ class SearchQueueManager:
     
     def __init__(self):
         self.max_processing_time = 300  # 5분 최대 처리 시간
+        self.last_cleanup_time = 0  # 마지막 타임아웃 정리 시간
+        self.cleanup_interval = 30  # 30초마다 한 번씩 타임아웃 정리
         
     def enqueue_search_request(self, server: str, character_name: str, 
                               client_ip: str = None, user_agent: str = None,
@@ -143,8 +145,11 @@ class SearchQueueManager:
         """처리할 다음 요청 가져오기"""
         try:
             with SessionLocal() as db:
-                # 타임아웃된 요청들을 먼저 정리
-                self._cleanup_timeout_requests(db)
+                # 타임아웃된 요청들을 주기적으로만 정리 (너무 자주 하지 않음)
+                current_time = time.time()
+                if current_time - self.last_cleanup_time > self.cleanup_interval:
+                    self._cleanup_timeout_requests(db)
+                    self.last_cleanup_time = current_time
                 
                 # 우선순위가 높은 대기 중인 요청 가져오기 (FOR UPDATE 제거)
                 request = db.execute(text("""
@@ -331,7 +336,11 @@ class SearchQueueManager:
             
             timeout_requests = result.fetchall()
             if timeout_requests:
-                logger.warning(f"타임아웃된 검색 요청 {len(timeout_requests)}개 정리 완료")
+                # 타임아웃 정리는 DEBUG 레벨로 변경 (너무 많은 로그 방지)
+                logger.debug(f"타임아웃된 검색 요청 {len(timeout_requests)}개 정리 완료")
+                # 많은 수의 타임아웃이 발생하는 경우에만 WARNING
+                if len(timeout_requests) > 5:
+                    logger.warning(f"대량 타임아웃 발생: {len(timeout_requests)}개 요청 정리")
                 
         except Exception as e:
             logger.error(f"타임아웃 요청 정리 실패: {e}")
