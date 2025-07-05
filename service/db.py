@@ -84,6 +84,10 @@ def insert_data(data, server=None, character=None, div=1, retrieved_at_kst=None,
             #logger.info("Recent data found, skipping database update")
             return {"success": True, "rows_affected": 0, "data": recent_data, "from_cache": True}
     
+    # 입력 데이터 로깅 (문제 진단용)
+    if data:
+        logger.info(f"DB 저장 시작: {len(data)}개 캐릭터 데이터 처리 (서버: {server}, DIV: {div})")
+    
     # If no recent data, proceed with insert/update
     db = SessionLocal()
     try:
@@ -98,6 +102,10 @@ def insert_data(data, server=None, character=None, div=1, retrieved_at_kst=None,
             current_time_for_db = KST.localize(current_time_for_db)
             
         # logger.info(f"사용할 타임스탬프: {current_time_for_db} (타입: {type(current_time_for_db)})")
+        
+        # 실제 처리된 레코드 수 추적
+        successful_inserts = 0
+        failed_inserts = 0
         
         for item in data:
             # Convert comma-separated strings to numbers
@@ -120,41 +128,93 @@ def insert_data(data, server=None, character=None, div=1, retrieved_at_kst=None,
             if item['change_type'] == 'down':
                 change_value_int = -abs(change_value_int)  # 내려간 경우 음수로 표현
             
-            # Insert or update record with div parameter
-            query = text("""
-                INSERT INTO mabinogi_ranking 
-                (rank_position, change_amount, change_type, server_name, character_name, class_name, power_value, div, retrieved_at)
-                VALUES (:rank, :change, :change_type, :server, :character, :class, :power, :div, :retrieved_at_val AT TIME ZONE 'Asia/Seoul')
-                ON CONFLICT (character_name, server_name, div) 
-                DO UPDATE SET 
-                    rank_position = :rank,
-                    change_amount = :change,
-                    change_type = :change_type,
-                    class_name = :class,
-                    power_value = :power,
-                    retrieved_at = :retrieved_at_val AT TIME ZONE 'Asia/Seoul'
-            """)
-            
-            db.execute(query, {
-                'rank': rank_position,
-                'change': change_value_int,  # 음수/양수로 변환된 change 값 사용
-                'change_type': item['change_type'],
-                'server': item['server'],
-                'character': item['character'],
-                'class': item['class'],
-                'power': power_value,
-                'div': div,  # Add div parameter to the query
-                'retrieved_at_val': current_time_for_db # Use the KST timestamp
-            })
+            try:
+                # Insert or update record with div parameter - RETURNING 절로 정확한 카운트 확인
+                query = text("""
+                    INSERT INTO mabinogi_ranking 
+                    (rank_position, change_amount, change_type, server_name, character_name, class_name, power_value, div, retrieved_at)
+                    VALUES (:rank, :change, :change_type, :server, :character, :class, :power, :div, :retrieved_at_val AT TIME ZONE 'Asia/Seoul')
+                    ON CONFLICT (character_name, server_name, div) 
+                    DO UPDATE SET 
+                        rank_position = EXCLUDED.rank_position,
+                        change_amount = EXCLUDED.change_amount,
+                        change_type = EXCLUDED.change_type,
+                        class_name = EXCLUDED.class_name,
+                        power_value = EXCLUDED.power_value,
+                        retrieved_at = EXCLUDED.retrieved_at
+                    RETURNING character_name, 
+                             CASE WHEN xmax = 0 THEN 'INSERT' ELSE 'UPDATE' END as action
+                """)
+                
+                result = db.execute(query, {
+                    'rank': rank_position,
+                    'change': change_value_int,  # 음수/양수로 변환된 change 값 사용
+                    'change_type': item['change_type'],
+                    'server': item['server'],
+                    'character': item['character'],
+                    'class': item['class'],
+                    'power': power_value,
+                    'div': div,  # Add div parameter to the query
+                    'retrieved_at_val': current_time_for_db # Use the KST timestamp
+                })
+                
+                # RETURNING 결과 확인
+                returned_row = result.fetchone()
+                if returned_row:
+                    successful_inserts += 1
+                    # 디버깅을 위해 액션 타입 로깅 (INSERT/UPDATE)
+                    action_type = returned_row[1] if len(returned_row) > 1 else 'UNKNOWN'
+                    logger.debug(f"캐릭터 '{item['character']}' {action_type} 성공")
+                else:
+                    failed_inserts += 1
+                    logger.warning(f"캐릭터 '{item['character']}' 저장 결과 없음")
+                    
+            except Exception as item_error:
+                failed_inserts += 1
+                logger.warning(f"캐릭터 '{item['character']}' 저장 실패: {str(item_error)[:100]}")
         
         db.commit()
+        
+        # 저장 결과 로깅 (문제 진단용)
+        total_processed = successful_inserts + failed_inserts
+        logger.info(f"DB 저장 완료: 총 {total_processed}개 처리, 성공 {successful_inserts}개, 실패 {failed_inserts}개")
+        
+        # 검증: 실제로 DB에 저장된 캐릭터 수 확인 (data에서 character 이름들 추출)
+        if data and len(data) > 0:
+            character_names = [item['character'] for item in data]
+            # 안전한 방법: 각 캐릭터 이름별로 개별 쿼리 실행 후 합계
+            verification_query = text("""
+                SELECT COUNT(*) FROM mabinogi_ranking 
+                WHERE character_name = :char_name
+                AND server_name = :server 
+                AND div = :div
+                AND retrieved_at >= :time_threshold
+            """)
+            
+            # 최근 1분 이내에 저장된 데이터 확인
+            time_threshold = current_time_for_db - timedelta(minutes=1) if current_time_for_db else get_current_time() - timedelta(minutes=1)
+            
+            actual_saved = 0
+            for char_name in character_names:
+                count = db.execute(verification_query, {
+                    'char_name': char_name,
+                    'server': server,
+                    'div': div,
+                    'time_threshold': time_threshold
+                }).scalar()
+                actual_saved += count
+            
+            if actual_saved != len(data):
+                logger.warning(f"DB 검증 결과 불일치: 입력 {len(data)}개, 보고된 성공 {successful_inserts}개, 실제 저장 {actual_saved}개")
+            else:
+                logger.debug(f"DB 검증 성공: {actual_saved}개 모두 정상 저장됨")
         
         # If character specified, get and return that character's data
         if character and server:
             result = get_character_data(server, character, div)
-            return {"success": True, "rows_affected": len(data), "data": result, "from_cache": False}
+            return {"success": True, "rows_affected": successful_inserts, "data": result, "from_cache": False}
         
-        return {"success": True, "rows_affected": len(data), "from_cache": False}
+        return {"success": True, "rows_affected": successful_inserts, "from_cache": False}
     except Exception as e:
         db.rollback()
         #logger.error(f"Error inserting data: {e}")

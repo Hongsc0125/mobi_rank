@@ -1000,16 +1000,29 @@ def fast_sequential_crawl_worker(server_num, div=1):
                                 # HTML 파싱
                                 parsed_data = parse_rank_html(html_data)
                                 if parsed_data:
+                                    # 파싱된 데이터 카운트 로깅 (문제 진단용)
+                                    parsed_count = len(parsed_data)
+                                    logger.info(f"서버 {server_name} '{character_name}' 검색 결과: {parsed_count}개 캐릭터 파싱됨")
+                                    
                                     # DB 저장 (캐시 무시하고 강제 업데이트)
                                     result = insert_data(parsed_data, server=server_name, div=div, force_update=True)
-                                    if result.get('success', False) and result.get('rows_affected', 0) > 0:
+                                    saved_count = result.get('rows_affected', 0)
+                                    
+                                    # 저장 결과 상세 로깅 (문제 진단용)
+                                    logger.info(f"서버 {server_name} '{character_name}' DB 저장 결과: {saved_count}개 저장됨 (파싱: {parsed_count}개)")
+                                    
+                                    if result.get('success', False):
+                                        # 파싱된 캐릭터와 저장된 캐릭터 수 불일치 체크
+                                        if parsed_count != saved_count:
+                                            logger.warning(f"서버 {server_name} '{character_name}' 데이터 불일치: 파싱 {parsed_count}개 vs 저장 {saved_count}개")
+                                        
                                         cycle_success += 1
                                         total_success += 1
                                         success = True
                                         break
                                     else:
                                         cycle_fail += 1
-                                        success = True
+                                        logger.error(f"서버 {server_name} '{character_name}' DB 저장 실패")
                                         break
                                 else:
                                     if retry < max_retries - 1:
