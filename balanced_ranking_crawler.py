@@ -153,6 +153,28 @@ class ServerCrawler:
         self.status_db = status_db
         self.worker_id = f"worker_{self.server_name}_{int(time.time())}"
         
+    def is_character_updated_today(self, character_name):
+        """캐릭터가 오늘 이미 업데이트되었는지 확인"""
+        db = SessionLocal()
+        try:
+            today_start = get_current_time().replace(hour=0, minute=0, second=0, microsecond=0)
+            
+            result = db.execute(text("""
+                SELECT COUNT(*) 
+                FROM mabinogi_ranking 
+                WHERE server_name = :server_name 
+                AND character_name = :character_name
+                AND retrieved_at >= :today_start
+            """), {
+                "server_name": self.server_name,
+                "character_name": character_name,
+                "today_start": today_start
+            }).scalar()
+            
+            return result > 0
+        finally:
+            db.close()
+    
     def get_characters_to_update(self):
         """오늘 아직 업데이트되지 않은 캐릭터 중 가장 오래된 캐릭터부터 순차적으로 조회"""
         db = SessionLocal()
@@ -216,69 +238,75 @@ class ServerCrawler:
                     characters_remaining=len(character_list)
                 )
                 
-                # 배치 처리 (100개씩)
-                batch_size = 100
-                for i in range(0, len(character_list), batch_size):
+                # 전체 캐릭터 순차 처리 (배치 처리 없이 연속적으로)
+                processed_in_cycle = 0
+                
+                for char_name in character_list:
                     if shutdown_event.is_set():
                         break
                     
-                    batch = character_list[i:i + batch_size]
-                    
-                    for char_name in batch:
-                        if shutdown_event.is_set():
-                            break
+                    try:
+                        # 검색 전에 캐릭터가 이미 오늘 업데이트되었는지 재확인
+                        if self.is_character_updated_today(char_name):
+                            logger.debug(f"{self.server_name} 캐릭터 '{char_name}' 이미 오늘 업데이트됨 - 패스")
+                            processed_in_cycle += 1
+                            continue
+                        
+                        self.status_db.update_status(
+                            self.server_name,
+                            current_character=char_name,
+                            characters_remaining=len(character_list) - processed_in_cycle
+                        )
+                        
+                        # 캐릭터 데이터 수집 (기존 sequential_ranking_crawler 방식 사용)
+                        from service.full_data import fetch_rank_via_dom, parse_rank_html
                         
                         try:
-                            self.status_db.update_status(
-                                self.server_name,
-                                current_character=char_name
-                            )
+                            # 전투력 랭킹만 검색 (div=1)
+                            html_data = fetch_rank_via_dom(self.server_name, char_name, rank_type=1)
                             
-                            # 캐릭터 데이터 수집 (기존 sequential_ranking_crawler 방식 사용)
-                            from service.full_data import fetch_rank_via_dom, parse_rank_html
-                            
-                            try:
-                                # 전투력 랭킹만 검색 (div=1)
-                                html_data = fetch_rank_via_dom(self.server_name, char_name, rank_type=1)
+                            if html_data:
+                                parsed_data = parse_rank_html(html_data)
                                 
-                                if html_data:
-                                    parsed_data = parse_rank_html(html_data)
+                                if parsed_data:
+                                    insert_result = insert_data(
+                                        parsed_data,
+                                        server=self.server_name,
+                                        div=1,
+                                        force_update=True
+                                    )
                                     
-                                    if parsed_data:
-                                        insert_result = insert_data(
-                                            parsed_data,
-                                            server=self.server_name,
-                                            div=1,
-                                            force_update=True
-                                        )
+                                    if insert_result.get('success'):
+                                        session_processed += 1
+                                        processed_in_cycle += 1
                                         
-                                        if insert_result.get('success'):
-                                            session_processed += 1
-                                            
-                            except Exception as fetch_error:
-                                logger.error(f"{self.server_name} 데이터 수집 오류 ({char_name}): {fetch_error}")
-                                continue
-                                            
-                            self.status_db.update_status(
-                                self.server_name,
-                                characters_processed=session_processed,
-                                session_processed=session_processed,
-                                characters_remaining=len(character_list) - session_processed
-                            )
-                            
-                            time.sleep(1.0)  # 서버 부하 방지 및 안정성 향상
-                            
-                        except Exception as e:
-                            logger.error(f"{self.server_name} 처리 오류 ({char_name}): {str(e)[:100]}")
-                            self.status_db.update_status(
-                                self.server_name,
-                                current_character=f'오류: {char_name}',
-                                errors_count=1
-                            )
-                            time.sleep(5)  # 오류 발생 시 더 긴 대기
-                    
-                    # 배치 완료 후 잠시 대기
-                    time.sleep(1)
+                        except Exception as fetch_error:
+                            logger.error(f"{self.server_name} 데이터 수집 오류 ({char_name}): {fetch_error}")
+                            continue
+                                        
+                        self.status_db.update_status(
+                            self.server_name,
+                            characters_processed=session_processed,
+                            session_processed=session_processed
+                        )
+                        
+                        time.sleep(1.0)  # 서버 부하 방지 및 안정성 향상
+                        
+                    except Exception as e:
+                        logger.error(f"{self.server_name} 처리 오류 ({char_name}): {str(e)[:100]}")
+                        self.status_db.update_status(
+                            self.server_name,
+                            current_character=f'오류: {char_name}',
+                            errors_count=1
+                        )
+                        time.sleep(5)  # 오류 발생 시 더 긴 대기
+                
+                # 한 사이클 완료 후 잠시 대기 (지속적인 루프 - 전체 캐릭터 순환)
+                self.status_db.update_status(
+                    self.server_name,
+                    current_character=f'사이클 완료: {processed_in_cycle}개 처리 - 재시작'
+                )
+                time.sleep(10)  # 10초 대기 후 새로운 사이클 시작
                 
         except Exception as e:
             logger.error(f"{self.server_name} 크롤링 실패: {e}")
