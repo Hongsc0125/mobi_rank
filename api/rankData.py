@@ -106,13 +106,13 @@ def rank_data(server=None, name=""):
         for rank_type, rank_data in all_ranks_data.get("ranks", {}).items():
             # logger.info(f"{rank_type} 랭킹 데이터 타입: {type(rank_data)}")
             if isinstance(rank_data, dict):
-                logger.info(f"{rank_type} 랭킹 데이터 keys: {list(rank_data.keys())}")
+                # logger.info(f"{rank_type} 랭킹 데이터 keys: {list(rank_data.keys())}")
                 data_list = rank_data.get("data", [])
             else:
                 # rank_data가 직접 list인 경우
                 data_list = rank_data if isinstance(rank_data, list) else []
             
-            logger.info(f"{rank_type} 랭킹 데이터 항목 수: {len(data_list)}")
+            # logger.info(f"{rank_type} 랭킹 데이터 항목 수: {len(data_list)}")
             
             # 첫 번째 항목 구조 확인
             if data_list:
