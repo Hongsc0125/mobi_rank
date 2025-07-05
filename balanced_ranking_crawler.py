@@ -154,26 +154,19 @@ class ServerCrawler:
         self.worker_id = f"worker_{self.server_name}_{int(time.time())}"
         
     def get_characters_to_update(self):
-        """오늘 업데이트가 필요한 캐릭터 목록 조회"""
+        """가장 오래된 캐릭터부터 순차적으로 업데이트할 캐릭터 목록 조회"""
         db = SessionLocal()
         try:
-            today_start = get_current_time().replace(hour=0, minute=0, second=0, microsecond=0)
-            
+            # 가장 오래된 retrieved_at 기준으로 정렬하여 전체 캐릭터 조회
             result = db.execute(text("""
-                SELECT DISTINCT character_name 
+                SELECT DISTINCT character_name,
+                       MAX(retrieved_at) as last_retrieved
                 FROM mabinogi_ranking 
                 WHERE server_name = :server_name
-                AND character_name NOT IN (
-                    SELECT DISTINCT character_name 
-                    FROM mabinogi_ranking 
-                    WHERE server_name = :server_name 
-                    AND retrieved_at >= :today_start
-                )
-                ORDER BY character_name
-                LIMIT 1000
+                GROUP BY character_name
+                ORDER BY last_retrieved ASC
             """), {
-                "server_name": self.server_name,
-                "today_start": today_start
+                "server_name": self.server_name
             }).fetchall()
             
             return [row[0] for row in result]
@@ -203,9 +196,9 @@ class ServerCrawler:
                     self.status_db.update_status(
                         self.server_name,
                         status='waiting',
-                        current_character='모든 캐릭터 업데이트 완료'
+                        current_character='캐릭터 목록 없음 - 재조회 중'
                     )
-                    time.sleep(300)  # 5분 대기
+                    time.sleep(30)  # 30초 후 재조회
                     continue
                 
                 self.status_db.update_status(
