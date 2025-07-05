@@ -17,7 +17,7 @@ from sqlalchemy import text
 
 # 프로젝트 모듈
 from service.db_session import SessionLocal, get_current_time, KST
-from service.full_data import fetch_all_ranks
+# fetch_all_ranks 대신 개별 함수 사용
 from service.db import insert_data
 
 # 로깅 설정 - 깔끔한 출력만
@@ -30,6 +30,11 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger(__name__)
+
+# Chrome 및 Selenium 로그 레벨 조정
+logging.getLogger('selenium').setLevel(logging.WARNING)
+logging.getLogger('urllib3').setLevel(logging.WARNING)
+logging.getLogger('service.full_data').setLevel(logging.WARNING)
 
 # 전역 설정
 SERVERS = [
@@ -227,23 +232,30 @@ class ServerCrawler:
                                 current_character=char_name
                             )
                             
-                            # 캐릭터 데이터 수집
-                            result = fetch_all_ranks(self.server_name, char_name)
+                            # 캐릭터 데이터 수집 (기존 sequential_ranking_crawler 방식 사용)
+                            from service.full_data import fetch_rank_via_dom, parse_rank_html
                             
-                            if result and 'ranks' in result:
-                                # 전투력 랭킹 데이터 저장
-                                if '전투력' in result['ranks']:
-                                    rank_data = result['ranks']['전투력']['data']
-                                    if rank_data:
+                            try:
+                                # 전투력 랭킹만 검색 (div=1)
+                                html_data = fetch_rank_via_dom(self.server_name, char_name, rank_type=1)
+                                
+                                if html_data:
+                                    parsed_data = parse_rank_html(html_data)
+                                    
+                                    if parsed_data:
                                         insert_result = insert_data(
-                                            rank_data, 
-                                            server=self.server_name, 
-                                            div=1, 
+                                            parsed_data,
+                                            server=self.server_name,
+                                            div=1,
                                             force_update=True
                                         )
                                         
                                         if insert_result.get('success'):
                                             session_processed += 1
+                                            
+                            except Exception as fetch_error:
+                                logger.error(f"{self.server_name} 데이터 수집 오류 ({char_name}): {fetch_error}")
+                                continue
                                             
                             self.status_db.update_status(
                                 self.server_name,
@@ -252,15 +264,16 @@ class ServerCrawler:
                                 characters_remaining=len(character_list) - session_processed
                             )
                             
-                            time.sleep(0.5)  # 서버 부하 방지
+                            time.sleep(1.0)  # 서버 부하 방지 및 안정성 향상
                             
                         except Exception as e:
-                            logger.error(f"{self.server_name} 처리 오류 ({char_name}): {e}")
+                            logger.error(f"{self.server_name} 처리 오류 ({char_name}): {str(e)[:100]}")
                             self.status_db.update_status(
                                 self.server_name,
-                                errors_count=1  # 증가시키려면 별도 로직 필요
+                                current_character=f'오류: {char_name}',
+                                errors_count=1
                             )
-                            time.sleep(2)
+                            time.sleep(5)  # 오류 발생 시 더 긴 대기
                     
                     # 배치 완료 후 잠시 대기
                     time.sleep(1)
