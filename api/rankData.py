@@ -181,6 +181,20 @@ def rank_data(server=None, name=""):
             "from_cache": False
         }
     except ValueError as e:
-        return {"success": False, "error": str(e)}
+        error_message = str(e)
+        if "CHARACTER_NOT_FOUND" in error_message:
+            return {
+                "success": False,
+                "message": f"캐릭터 '{name}'을(를) 서버 '{server}'에서 찾을 수 없습니다. 캐릭터명과 서버명을 다시 확인해주세요.",
+                "error_code": "CHARACTER_NOT_FOUND",
+                "from_cache": False
+            }
+        else:
+            return {
+                "success": False, 
+                "message": "검색 중 오류가 발생했습니다.",
+                "error": error_message,
+                "from_cache": False
+            }
     except Exception as e:
         return {"success": False, "error": "서버 에러: "+str(e)}

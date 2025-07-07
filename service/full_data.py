@@ -276,6 +276,12 @@ def parse_rank_html(html: str):
     if no_data:
         # Return empty list for no results
         return []
+    
+    # Check for character not found modal
+    modal_message = soup.select_one("div.modal_inner div.message")
+    if modal_message and "랭킹 정보를 찾을 수 없습니다" in modal_message.get_text():
+        logger.warning("캐릭터 랭킹 정보를 찾을 수 없음 - 모달 감지")
+        raise ValueError("CHARACTER_NOT_FOUND")
 
     for li in soup.select("ul.list li.item"):
         try:
