@@ -60,11 +60,38 @@ def rank_data(server=None, name=""):
             if not has_empty_data:
                 normalized_data = normalize_rank_data(recent_all_ranks)
                 logger.info(f"캐싱데이터 반환 : {normalized_data}")
+                
+                # 크롤링 반환 구조와 동일하게 변환
+                character_data = {
+                    "server": normalized_data.get("server"),
+                    "rankings": {},
+                    "character": normalized_data.get("character"),
+                    "retrieved_at": normalized_data.get("retrieved_at")
+                }
+                
+                # rankings 데이터 변환 (DB 형식 -> API 형식)
+                for rank_type, rank_info in normalized_data.get("rankings", {}).items():
+                    if rank_info.get("data") and len(rank_info["data"]) > 0:
+                        # DB에서 가져온 데이터의 첫 번째 항목 사용
+                        db_data = rank_info["data"][0]
+                        character_data["rankings"][rank_type] = {
+                            "rank": f"{db_data.get('rank_position', 0):,}위",
+                            "class": db_data.get("class_name", ""),
+                            "power": f"{db_data.get('power_value', 0):,}",
+                            "change": db_data.get("change_amount", 0),
+                            "server": db_data.get("server_name", ""),
+                            "character": db_data.get("character_name", ""),
+                            "change_type": db_data.get("change_type", "none")
+                        }
+                
                 return {
-                    "success": True, 
-                    "data": normalized_data,
+                    "success": True,
                     "message": "Retrieved from cache (less than 10 minutes old)",
-                    "from_cache": True
+                    "from_cache": True,
+                    "job_id": None,  # 캐시에서는 job_id 없음
+                    "status": "completed",
+                    "completed_at": normalized_data.get("retrieved_at"),
+                    "character": character_data
                 }
             else:
                 logger.info("캐시에 빈 데이터가 있어 새로 크롤링 실행")
