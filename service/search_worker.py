@@ -7,8 +7,10 @@
 import logging
 import threading
 import time
+import signal
 from typing import Optional
 from datetime import datetime, timedelta
+from concurrent.futures import ThreadPoolExecutor, TimeoutError
 
 from .search_queue import search_queue_manager, SearchStatus
 from api.rankData import rank_data
@@ -72,7 +74,7 @@ class SearchWorker:
                 time.sleep(5)  # 오류 발생 시 잠시 대기
     
     def _process_request(self, request: dict):
-        """개별 검색 요청 처리"""
+        """개별 검색 요청 처리 (1분 타임아웃 적용)"""
         request_id = request['request_id']
         server = request['server']
         character_name = request['character_name']
@@ -81,29 +83,51 @@ class SearchWorker:
         
         start_time = time.time()
         
+        def search_with_timeout():
+            """타임아웃이 적용된 검색 함수"""
+            return rank_data(server=server, name=character_name)
+        
         try:
-            # 실제 검색 수행
-            result = rank_data(server=server, name=character_name)
-            
-            if result and result.get('success'):
-                # 성공적으로 처리됨
-                search_queue_manager.complete_request(request_id, result)
-                self.processed_count += 1
+            # ThreadPoolExecutor를 사용하여 1분 타임아웃 적용
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(search_with_timeout)
                 
-                processing_time = time.time() - start_time
-                logger.info(f"워커 {self.worker_id}: 검색 완료 - {server}/{character_name} ({processing_time:.2f}초)")
-                
-            else:
-                # 검색 결과가 없거나 실패
-                error_msg = result.get('error', 'Unknown search error') if result else 'No result returned'
-                search_queue_manager.fail_request(request_id, error_msg, retry=True)
-                self.failed_count += 1
-                
-                logger.warning(f"워커 {self.worker_id}: 검색 실패 - {server}/{character_name}: {error_msg}")
+                try:
+                    # 60초 타임아웃
+                    result = future.result(timeout=60)
+                    
+                    if result and result.get('success'):
+                        # 성공적으로 처리됨
+                        search_queue_manager.complete_request(request_id, result)
+                        self.processed_count += 1
+                        
+                        processing_time = time.time() - start_time
+                        logger.info(f"워커 {self.worker_id}: 검색 완료 - {server}/{character_name} ({processing_time:.2f}초)")
+                        
+                    else:
+                        # 검색 결과가 없거나 실패
+                        error_msg = result.get('error', 'Unknown search error') if result else 'No result returned'
+                        search_queue_manager.fail_request(request_id, error_msg, retry=True)
+                        self.failed_count += 1
+                        
+                        logger.warning(f"워커 {self.worker_id}: 검색 실패 - {server}/{character_name}: {error_msg}")
+                        
+                except TimeoutError:
+                    # 1분 타임아웃 발생
+                    processing_time = time.time() - start_time
+                    error_msg = f"Search timeout after {processing_time:.1f} seconds (limit: 60s)"
+                    search_queue_manager.fail_request(request_id, error_msg, retry=False)  # 타임아웃은 재시도 안함
+                    self.failed_count += 1
+                    
+                    logger.error(f"🚨 워커 {self.worker_id}: 검색 타임아웃 - {server}/{character_name} ({processing_time:.1f}초)")
+                    
+                    # future를 명시적으로 취소 시도
+                    future.cancel()
                 
         except Exception as e:
             # 예외 발생
-            error_msg = f"Worker exception: {str(e)}"
+            processing_time = time.time() - start_time
+            error_msg = f"Worker exception after {processing_time:.1f}s: {str(e)}"
             search_queue_manager.fail_request(request_id, error_msg, retry=True)
             self.failed_count += 1
             
