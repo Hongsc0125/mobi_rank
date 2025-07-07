@@ -368,12 +368,22 @@ class PersistentRankingCache:
                         logger.info(f"{rank_names[rank_type]} 서버 변경: {self.last_server.get(rank_type)} -> {server}")
                         self._select_server_fast(driver, server)
                         self.last_server[rank_type] = server
-                        time.sleep(3)  # selectBoxHandler 완료 대기
+                        # 서버 변경 대기 시간은 _select_server_fast 내부에서 처리됨
                     
                     # 캐릭터 검색
                     logger.info(f"{rank_names[rank_type]} 캐릭터 '{character_name}' 검색 시작")
                     self._search_character_fast(driver, character_name)
-                    time.sleep(3)  # 검색 결과 로딩 대기
+                    
+                    # 랭킹 데이터 로딩 대기 (full_data.py와 동일)
+                    from selenium.webdriver.support.ui import WebDriverWait
+                    from selenium.webdriver.support import expected_conditions as EC
+                    from selenium.webdriver.common.by import By
+                    
+                    wait = WebDriverWait(driver, 20)
+                    wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "div[data-mm-rankinglist], ul.list")))
+                    
+                    # 추가 대기 시간 (DOM 업데이트 완료 대기)
+                    time.sleep(2)
                     
                     # 결과 파싱
                     page_source = driver.page_source
@@ -411,48 +421,17 @@ class PersistentRankingCache:
         }
     
     def _select_server_fast(self, driver, server):
-        """JavaScript를 사용한 고속 서버 선택 (full_data.py와 정확히 동일한 방식)"""
+        """balanced_ranking_crawler와 동일한 방식의 서버 선택 (full_data.py 사용)"""
         try:
-            # 서버명을 서버 ID로 매핑 (full_data.py와 동일)
-            server_mapping = {
-                "데이안": "1", "아이라": "2", "던컨": "3", "알리사": "4",
-                "메이븐": "5", "라사": "6", "칼릭스": "7"
-            }
+            from service.full_data import select_server_option
             
-            server_id = server_mapping.get(server, "1")
-            logger.info(f"서버 '{server}' -> ID '{server_id}' 매핑")
-            
-            # full_data.py와 정확히 동일한 방식의 서버 선택
-            script = f"""
-            // 서버 select box 찾기
-            var serverBox = document.querySelector('.select_server .select_box');
-            if (serverBox) {{
-                // selectBoxHandler 호출
-                if (typeof selectBoxHandler === 'function') {{
-                    selectBoxHandler(serverBox);
-                    
-                    // 잠시 대기 후 옵션 클릭
-                    setTimeout(function() {{
-                        var option = document.querySelector('li[data-serverid="{server_id}"]');
-                        if (option) {{
-                            option.click();
-                            console.log('서버 선택 완료: {server} (ID: {server_id})');
-                        }} else {{
-                            console.log('서버 옵션을 찾을 수 없음: {server} (ID: {server_id})');
-                        }}
-                    }}, 500);
-                }} else {{
-                    console.log('selectBoxHandler 함수를 찾을 수 없음');
-                }}
-            }} else {{
-                console.log('서버 선택 박스를 찾을 수 없음');
-            }}
-            """
-            driver.execute_script(script)
-            logger.info(f"서버 선택 JavaScript 실행 완료: {server}")
+            logger.info(f"서버 선택 시작: {server}")
+            select_server_option(driver, server)
+            time.sleep(2)  # full_data.py와 동일한 대기 시간
+            logger.info(f"서버 선택 완료: {server}")
             
         except Exception as e:
-            logger.error(f"고속 서버 선택 실패: {e}")
+            logger.error(f"서버 선택 실패: {e}")
             # 폴백: 기존 방식 사용
             self._select_server_fallback(driver, server)
     
@@ -475,20 +454,17 @@ class PersistentRankingCache:
             logger.error(f"폴백 서버 선택 실패: {e}")
     
     def _search_character_fast(self, driver, character_name):
-        """JavaScript를 사용한 고속 캐릭터 검색 (full_data.py와 정확히 동일한 방식)"""
+        """balanced_ranking_crawler와 동일한 방식의 캐릭터 검색 (full_data.py 사용)"""
         try:
-            # full_data.py와 정확히 동일한 방식 사용
-            search_input = driver.find_element(By.CSS_SELECTOR, "input[name='search']")
-            search_input.clear()
-            search_input.send_keys(character_name)
+            from service.full_data import search_character
             
-            search_button = driver.find_element(By.CSS_SELECTOR, "button[data-searchtype='search']")
-            driver.execute_script("arguments[0].click();", search_button)
-            
+            logger.info(f"캐릭터 검색 시작: {character_name}")
+            search_character(driver, character_name)
+            time.sleep(3)  # full_data.py와 동일한 대기 시간
             logger.info(f"캐릭터 검색 완료: {character_name}")
             
         except Exception as e:
-            logger.error(f"고속 캐릭터 검색 실패: {e}")
+            logger.error(f"캐릭터 검색 실패: {e}")
             # 폴백: 기존 방식 사용
             self._search_character_fallback(driver, character_name)
     
@@ -505,6 +481,36 @@ class PersistentRankingCache:
             
         except Exception as e:
             logger.error(f"폴백 캐릭터 검색 실패: {e}")
+    
+    def _get_current_selected_server(self, driver):
+        """현재 선택된 서버명을 가져옵니다"""
+        try:
+            # 서버 선택 박스에서 현재 선택된 서버 텍스트 확인 (더 정확한 셀렉터 사용)
+            script = """
+            var serverBox = document.querySelector('.select_server .select_box .selected');
+            if (serverBox) {
+                var selectedText = serverBox.textContent || serverBox.innerText;
+                return selectedText.trim();
+            }
+            
+            // 대안: data-serverid로 현재 선택된 서버 찾기
+            var selectedOption = document.querySelector('.select_server li.selected');
+            if (selectedOption) {
+                var serverId = selectedOption.getAttribute('data-serverid');
+                var serverMap = {'1': '데이안', '2': '아이라', '3': '던컨', '4': '알리사', '5': '메이븐', '6': '라사', '7': '칼릭스'};
+                return serverMap[serverId] || null;
+            }
+            
+            return null;
+            """
+            
+            selected_server = driver.execute_script(script)
+            logger.debug(f"현재 선택된 서버: {selected_server}")
+            return selected_server
+            
+        except Exception as e:
+            logger.error(f"현재 서버 확인 실패: {e}")
+            return None
     
     def shutdown(self):
         """캐시 시스템 종료"""
