@@ -44,16 +44,30 @@ def rank_data(server=None, name=""):
         # 먼저 캐시에서 데이터 확인 (세 가지 랭킹에 대한 캐시 검색)
         recent_all_ranks = get_all_ranks_data(server, name)
         
-        # 캐시가 있으면 형식 통일 후 반환
+        # 캐시가 있으면 빈 데이터 체크 후 반환
         if recent_all_ranks and recent_all_ranks.get("rankings"):
-            normalized_data = normalize_rank_data(recent_all_ranks)
-            logger.info(f"캐싱데이터 반환 : {normalized_data}")
-            return {
-                "success": True, 
-                "data": normalized_data,
-                "message": "Retrieved from cache (less than 10 minutes old)",
-                "from_cache": True
-            }
+            rankings = recent_all_ranks.get("rankings", {})
+            
+            # 빈 데이터가 있는지 체크 (전투력, 매력, 생활력 중 하나라도 빈 배열이면 새로 크롤링)
+            has_empty_data = False
+            for rank_type in ["전투력", "매력", "생활력"]:
+                rank_data = rankings.get(rank_type, {})
+                if not rank_data.get("data") or len(rank_data.get("data", [])) == 0:
+                    logger.warning(f"캐시된 {rank_type} 데이터가 비어있음, 새로 크롤링 필요")
+                    has_empty_data = True
+                    break
+            
+            if not has_empty_data:
+                normalized_data = normalize_rank_data(recent_all_ranks)
+                logger.info(f"캐싱데이터 반환 : {normalized_data}")
+                return {
+                    "success": True, 
+                    "data": normalized_data,
+                    "message": "Retrieved from cache (less than 10 minutes old)",
+                    "from_cache": True
+                }
+            else:
+                logger.info("캐시에 빈 데이터가 있어 새로 크롤링 실행")
         
         # 캐시에 없으면 세 가지 랭킹(전투력, 매력, 생활력) 데이터를 동시에 가져옴
         logger.info(f"서버 '{server}'에서 캐릭터 '{name}'의 모든 랭킹 동시 조회 시작")
