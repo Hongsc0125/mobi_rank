@@ -337,13 +337,27 @@ class PersistentRankingCache:
         with self.lock:
             for rank_type in [1, 2, 3]:
                 if rank_type not in self.drivers:
-                    logger.warning(f"랭킹 타입 {rank_type} 드라이버 없음, 건너뜀")
-                    results[rank_names[rank_type]] = {
-                        "type": rank_names[rank_type],
-                        "data": [],
-                        "retrieved_at": retrieved_at
-                    }
-                    continue
+                    logger.warning(f"랭킹 타입 {rank_type} 드라이버 없음, 새로 생성 시도...")
+                    try:
+                        # 드라이버가 없으면 새로 생성
+                        self._recreate_driver(rank_type)
+                        if rank_type not in self.drivers:
+                            logger.error(f"랭킹 타입 {rank_type} 드라이버 생성 실패, 건너뜀")
+                            results[rank_names[rank_type]] = {
+                                "type": rank_names[rank_type],
+                                "data": [],
+                                "retrieved_at": retrieved_at
+                            }
+                            continue
+                        logger.info(f"랭킹 타입 {rank_type} 드라이버 생성 성공")
+                    except Exception as e:
+                        logger.error(f"랭킹 타입 {rank_type} 드라이버 생성 중 오류: {e}")
+                        results[rank_names[rank_type]] = {
+                            "type": rank_names[rank_type],
+                            "data": [],
+                            "retrieved_at": retrieved_at
+                        }
+                        continue
                     
                 try:
                     driver = self.drivers[rank_type]
