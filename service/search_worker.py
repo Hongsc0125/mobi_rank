@@ -103,8 +103,33 @@ class SearchWorker:
                 
                 logger.warning(f"워커 {self.worker_id}: 검색 실패 - {server}/{character_name}: {error_msg}")
                 
+        except ValueError as e:
+            # ValueError 처리 (CHARACTER_NOT_FOUND 등)
+            processing_time = time.time() - start_time
+            error_message = str(e)
+            
+            if "CHARACTER_NOT_FOUND" in error_message:
+                # 캐릭터 미발견 - 재시도 없이 완료 처리
+                error_result = {
+                    "success": False,
+                    "message": f"캐릭터 '{character_name}'을(를) 서버 '{server}'에서 찾을 수 없습니다. 캐릭터명과 서버명을 다시 확인해주세요.",
+                    "error_code": "CHARACTER_NOT_FOUND",
+                    "from_cache": False
+                }
+                search_queue_manager.complete_request(request_id, error_result)
+                self.processed_count += 1
+                
+                logger.info(f"워커 {self.worker_id}: 캐릭터 미발견 - {server}/{character_name} ({processing_time:.2f}초)")
+            else:
+                # 다른 ValueError
+                error_msg = f"Search ValueError after {processing_time:.1f}s: {error_message}"
+                search_queue_manager.fail_request(request_id, error_msg, retry=True)
+                self.failed_count += 1
+                
+                logger.warning(f"워커 {self.worker_id}: 검색 중 ValueError - {server}/{character_name}: {e}")
+                
         except Exception as e:
-            # 예외 발생
+            # 일반 예외 발생
             processing_time = time.time() - start_time
             error_msg = f"Worker exception after {processing_time:.1f}s: {str(e)}"
             search_queue_manager.fail_request(request_id, error_msg, retry=True)
