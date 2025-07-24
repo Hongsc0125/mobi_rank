@@ -281,14 +281,8 @@ def parse_rank_html(html: str):
     modal_message = soup.select_one("div.modal_inner div.message")
     if modal_message:
         message_text = modal_message.get_text().strip()
-        # 다양한 캐릭터 없음 메시지 패턴 확인
-        not_found_patterns = [
-            "랭킹 정보를 찾을 수 없습니다",
-            "입력한 캐릭터명의",
-            "캐릭터명의 랭킹 정보를 찾을 수 없습니다"
-        ]
-        
-        if any(pattern in message_text for pattern in not_found_patterns):
+        # 정확한 캐릭터 없음 메시지만 확인 (더 구체적으로)
+        if ("입력한 캐릭터명의" in message_text and "랭킹 정보를 찾을 수 없습니다" in message_text):
             logger.warning(f"캐릭터 랭킹 정보를 찾을 수 없음 - 모달 감지: {message_text}")
             raise ValueError("CHARACTER_NOT_FOUND")
 
