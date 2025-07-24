@@ -37,6 +37,15 @@ def fetch_all_ranks_fast(server, character_name):
         else:
             logger.warning("랭킹 캐시가 초기화되지 않음, 기존 방식 사용")
             
+    except ValueError as e:
+        error_message = str(e)
+        if "CHARACTER_NOT_FOUND" in error_message:
+            # 캐릭터가 존재하지 않는 경우 예외 전파 (폴백 없음)
+            logger.warning(f"고속 캐시에서 캐릭터 '{character_name}' 찾을 수 없음 - 예외 전파")
+            raise e
+        else:
+            # 다른 ValueError인 경우 폴백
+            logger.error(f"고속 캐시 검색 중 ValueError: {e}, 기존 방식으로 폴백")
     except Exception as e:
         logger.error(f"고속 캐시 검색 중 오류 발생: {e}, 기존 방식으로 폴백")
     

@@ -397,6 +397,28 @@ class PersistentRankingCache:
                     
                     logger.info(f"{rank_names[rank_type]} 검색 완료: {len(parsed_data)}개 결과")
                     
+                except ValueError as e:
+                    error_message = str(e)
+                    if "CHARACTER_NOT_FOUND" in error_message:
+                        # 캐릭터가 존재하지 않는 경우 즉시 예외 전파 (재시도 없음)
+                        logger.warning(f"캐릭터 '{character_name}' 존재하지 않음 - 검색 중단")
+                        raise e
+                    else:
+                        # 다른 ValueError인 경우 일반 오류 처리
+                        logger.error(f"랭킹 타입 {rank_type} 검색 중 ValueError: {e}")
+                        results[rank_names[rank_type]] = {
+                            "type": rank_names[rank_type],
+                            "data": [],
+                            "error": str(e),
+                            "retrieved_at": retrieved_at
+                        }
+                        
+                        # 드라이버 재생성 시도
+                        try:
+                            self._recreate_driver(rank_type)
+                        except:
+                            pass
+                            
                 except Exception as e:
                     logger.error(f"랭킹 타입 {rank_type} 검색 중 오류: {e}")
                     results[rank_names[rank_type]] = {
@@ -406,7 +428,7 @@ class PersistentRankingCache:
                         "retrieved_at": retrieved_at
                     }
                     
-                    # 오류 발생시 드라이버 재생성 시도
+                    # 일반 오류 발생시 드라이버 재생성 시도
                     try:
                         self._recreate_driver(rank_type)
                     except:
