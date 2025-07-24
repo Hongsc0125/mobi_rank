@@ -97,11 +97,20 @@ class SearchWorker:
                 
             else:
                 # 검색 결과가 없거나 실패
-                error_msg = result.get('error', 'Unknown search error') if result else 'No result returned'
-                search_queue_manager.fail_request(request_id, error_msg, retry=True)
-                self.failed_count += 1
-                
-                logger.warning(f"워커 {self.worker_id}: 검색 실패 - {server}/{character_name}: {error_msg}")
+                if result and result.get('error_code') == 'CHARACTER_NOT_FOUND':
+                    # 캐릭터 미발견 - 재시도 없이 완료 처리
+                    search_queue_manager.complete_request(request_id, result)
+                    self.processed_count += 1
+                    
+                    processing_time = time.time() - start_time
+                    logger.info(f"워커 {self.worker_id}: 캐릭터 미발견 - {server}/{character_name} ({processing_time:.2f}초)")
+                else:
+                    # 다른 실패
+                    error_msg = result.get('error', 'Unknown search error') if result else 'No result returned'
+                    search_queue_manager.fail_request(request_id, error_msg, retry=True)
+                    self.failed_count += 1
+                    
+                    logger.warning(f"워커 {self.worker_id}: 검색 실패 - {server}/{character_name}: {error_msg}")
                 
         except ValueError as e:
             # ValueError 처리 (CHARACTER_NOT_FOUND 등)
