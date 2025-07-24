@@ -332,11 +332,20 @@ def parse_rank_html(html: str):
             logger.warning(f"모달 검사 중 예외 발생: {e}")
             return False, None
     
-    # 캐릭터 미발견 모달 검사 실행
-    is_not_found, modal_text = is_character_not_found_modal(soup)
-    if is_not_found:
-        logger.warning(f"캐릭터 랭킹 정보를 찾을 수 없음 - 모달 감지: {modal_text}")
-        raise ValueError("CHARACTER_NOT_FOUND")
+    # 먼저 실제 랭킹 데이터가 있는지 확인
+    ranking_items = soup.select("ul.list li.item")
+    has_ranking_data = len(ranking_items) > 0
+    
+    # 랭킹 데이터가 없을 때만 모달 검사 실행
+    if not has_ranking_data:
+        is_not_found, modal_text = is_character_not_found_modal(soup)
+        if is_not_found:
+            logger.warning(f"캐릭터 랭킹 정보를 찾을 수 없음 - 모달 감지 (데이터 없음 확인): {modal_text}")
+            raise ValueError("CHARACTER_NOT_FOUND")
+        else:
+            logger.debug("랭킹 데이터 없음 + 모달 없음 = 일반적인 빈 결과")
+    else:
+        logger.debug(f"랭킹 데이터 존재 ({len(ranking_items)}개), 모달 검사 생략")
 
     for li in soup.select("ul.list li.item"):
         try:
