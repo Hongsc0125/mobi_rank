@@ -277,14 +277,66 @@ def parse_rank_html(html: str):
         # Return empty list for no results
         return []
     
-    # Check for character not found modal
-    modal_message = soup.select_one("div.modal_inner div.message")
-    if modal_message:
-        message_text = modal_message.get_text().strip()
-        # 정확한 캐릭터 없음 메시지만 확인 (더 구체적으로)
-        if ("입력한 캐릭터명의" in message_text and "랭킹 정보를 찾을 수 없습니다" in message_text):
-            logger.warning(f"캐릭터 랭킹 정보를 찾을 수 없음 - 모달 감지: {message_text}")
-            raise ValueError("CHARACTER_NOT_FOUND")
+    # Check for character not found modal (더 견고한 검사)
+    def is_character_not_found_modal(soup):
+        """캐릭터 미발견 모달을 정확히 감지하는 함수"""
+        try:
+            # 1. 모달 구조 확인
+            modal_inner = soup.select_one("div.modal_inner")
+            if not modal_inner:
+                logger.debug("모달 검사: modal_inner 요소 없음")
+                return False, None
+                
+            # 2. 모달 헤더에 로고가 있는지 확인 (정식 에러 모달의 특징)
+            modal_header = modal_inner.select_one("div.modal_header")
+            if not modal_header:
+                logger.debug("모달 검사: modal_header 요소 없음")
+                return False, None
+                
+            logo = modal_header.select_one("div.logo")
+            if not logo:
+                logger.debug("모달 검사: 로고 요소 없음")
+                return False, None
+            
+            # 3. 메시지 영역 확인
+            message_div = modal_inner.select_one("div.modal_body div.message")
+            if not message_div:
+                logger.debug("모달 검사: 메시지 영역 없음")
+                return False, None
+                
+            message_text = message_div.get_text().strip()
+            logger.debug(f"모달 검사: 메시지 텍스트 = '{message_text}'")
+            
+            # 4. 확인 버튼이 있는지 확인 (정식 에러 모달의 특징)
+            confirm_button = modal_inner.select_one("div.button_area button.confirm_button")
+            if not confirm_button:
+                logger.debug("모달 검사: 확인 버튼 없음")
+                return False, None
+            
+            # 5. 정확한 캐릭터 미발견 메시지인지 확인
+            has_input_char = "입력한 캐릭터명의" in message_text
+            has_not_found = "랭킹 정보를 찾을 수 없습니다" in message_text
+            
+            logger.debug(f"모달 검사: 입력한캐릭터명={has_input_char}, 랭킹정보없음={has_not_found}")
+            
+            is_character_not_found = has_input_char and has_not_found
+            
+            if is_character_not_found:
+                logger.info(f"✅ 캐릭터 미발견 모달 확정: '{message_text}'")
+            else:
+                logger.debug(f"❌ 캐릭터 미발견 모달 아님: '{message_text}'")
+            
+            return is_character_not_found, message_text
+            
+        except Exception as e:
+            logger.warning(f"모달 검사 중 예외 발생: {e}")
+            return False, None
+    
+    # 캐릭터 미발견 모달 검사 실행
+    is_not_found, modal_text = is_character_not_found_modal(soup)
+    if is_not_found:
+        logger.warning(f"캐릭터 랭킹 정보를 찾을 수 없음 - 모달 감지: {modal_text}")
+        raise ValueError("CHARACTER_NOT_FOUND")
 
     for li in soup.select("ul.list li.item"):
         try:
