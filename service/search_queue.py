@@ -55,7 +55,7 @@ class SearchRequestQueue(Base):
     # 재시도 및 타임아웃
     retry_count = Column(Integer, nullable=False, default=0)
     max_retries = Column(Integer, nullable=False, default=3)
-    timeout_seconds = Column(Integer, nullable=False, default=60)
+    timeout_seconds = Column(Integer, nullable=False, default=600)
 
 def create_search_queue_table():
     """검색 큐 테이블 생성"""
@@ -93,9 +93,9 @@ class SearchQueueManager:
     """검색 큐 관리 클래스"""
     
     def __init__(self):
-        self.max_processing_time = 60  # 1분 최대 처리 시간
+        self.max_processing_time = 600  # 10분 최대 처리 시간 (매우 오래 걸리는 검색도 허용)
         self.last_cleanup_time = 0  # 마지막 타임아웃 정리 시간
-        self.cleanup_interval = 10  # 10초마다 한 번씩 타임아웃 정리
+        self.cleanup_interval = 60  # 60초마다 한 번씩 타임아웃 정리 (빈도 줄임)
         
     def enqueue_search_request(self, server: str, character_name: str, 
                               client_ip: str = None, user_agent: str = None,
@@ -338,7 +338,7 @@ class SearchQueueManager:
             if timeout_requests:
                 # 타임아웃은 중요한 이벤트이므로 WARNING 레벨로 로깅
                 timeout_ids = [str(req.request_id) for req in timeout_requests]
-                logger.warning(f"검색 요청 타임아웃: {len(timeout_requests)}개 요청이 1분을 초과하여 실패 처리됨")
+                logger.warning(f"검색 요청 타임아웃: {len(timeout_requests)}개 요청이 10분을 초과하여 실패 처리됨")
                 logger.warning(f"타임아웃된 요청 ID들: {', '.join(timeout_ids[:5])}{'...' if len(timeout_ids) > 5 else ''}")
                 
                 # 대량 타임아웃 발생시 더 강한 경고
