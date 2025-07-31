@@ -149,7 +149,16 @@ def generate_population_graph(population_data):
         matplotlib.use('Agg')  # GUI 없이 이미지만 생성하는 모드
         
         # 한글 폰트 설정
-        plt.rcParams['font.family'] = 'Malgun Gothic'
+        font_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "D2Coding.ttf")
+        if os.path.exists(font_path):
+            from matplotlib import font_manager
+            # 폰트 캐시 재구성
+            font_manager.fontManager.addfont(font_path)
+            plt.rcParams['font.family'] = 'D2Coding'
+            logger.info(f"D2Coding 폰트 설정 완료: {font_path}")
+        else:
+            plt.rcParams['font.family'] = 'DejaVu Sans'
+            logger.warning(f"D2Coding 폰트를 찾을 수 없어 기본 폰트 사용: {font_path}")
         plt.rcParams['axes.unicode_minus'] = False
         
         # 데이터 준비
