@@ -182,29 +182,35 @@ def update_population_data():
 
 def update_class_population_data():
     """직업별 인구 통계 데이터를 업데이트하는 백그라운드 작업
-    1시간 이내에 이미 업데이트한 이력이 있으면 갱신을 스킵합니다.
+    서버 시작시 즉시 실행 후 10분마다 업데이트합니다.
     """
     from service.population_statistics import _class_population_cache, update_class_population_cache
+    
+    # 서버 시작시 즉시 실행
+    first_run = True
     
     while True:
         try:
             # 현재 시간(KST) 가져오기
             current_time = get_current_time()
             
-            # 마지막 업데이트 시간 확인
-            last_updated = _class_population_cache.get("last_updated")
-            
-            # 1시간 이내 업데이트 이력이 있는지 확인
-            if last_updated and (current_time - last_updated).total_seconds() < 3600:
-                one_hour_ago = (current_time - timedelta(hours=1)).strftime('%Y-%m-%d %H:%M:%S KST')
-                print(f"[{current_time.strftime('%Y-%m-%d %H:%M:%S KST')}] 직업별 인구 통계가 최근({one_hour_ago} 이후) 업데이트되었으므로 스킵합니다.")
-                # 다음 업데이트 시간까지 대기
-                remaining_time = 3600 - (current_time - last_updated).total_seconds()
-                time.sleep(max(60, remaining_time))  # 최소 1분 이상 대기
-                continue
-            
-            # 1시간 이상 지났거나 처음 실행이면 데이터 갱신
-            print(f"[{current_time.strftime('%Y-%m-%d %H:%M:%S KST')}] 직업별 인구 통계 업데이트 시작...")
+            if first_run:
+                print(f"[{current_time.strftime('%Y-%m-%d %H:%M:%S KST')}] 서버 시작: 직업별 인구 통계 즉시 업데이트 시작...")
+                first_run = False
+            else:
+                # 마지막 업데이트 시간 확인
+                last_updated = _class_population_cache.get("last_updated")
+                
+                # 10분 이내 업데이트 이력이 있는지 확인
+                if last_updated and (current_time - last_updated).total_seconds() < 600:
+                    ten_minutes_ago = (current_time - timedelta(minutes=10)).strftime('%Y-%m-%d %H:%M:%S KST')
+                    print(f"[{current_time.strftime('%Y-%m-%d %H:%M:%S KST')}] 직업별 인구 통계가 최근({ten_minutes_ago} 이후) 업데이트되었으므로 스킵합니다.")
+                    # 다음 업데이트 시간까지 대기
+                    remaining_time = 600 - (current_time - last_updated).total_seconds()
+                    time.sleep(max(60, remaining_time))  # 최소 1분 이상 대기
+                    continue
+                
+                print(f"[{current_time.strftime('%Y-%m-%d %H:%M:%S KST')}] 직업별 인구 통계 업데이트 시작...")
             
             # 직업별 인구 통계 생성 및 캐시 업데이트
             result = update_class_population_cache()
@@ -214,14 +220,14 @@ def update_class_population_data():
             else:
                 print(f"[{current_time.strftime('%Y-%m-%d %H:%M:%S KST')}] 직업별 인구 통계 업데이트 실패")
             
-            # 1시간 대기
-            time.sleep(3600)  # 1시간 = 3600초
+            # 10분 대기
+            time.sleep(600)  # 10분 = 600초
             
         except Exception as e:
             print(f"직업별 인구 통계 업데이트 오류: {e}")
             traceback.print_exc()
-            # 오류 발생 시 10분 후 재시도
-            time.sleep(600)
+            # 오류 발생 시 5분 후 재시도
+            time.sleep(300)
 
 def update_population_statistics_task():
     """
@@ -272,18 +278,25 @@ def update_population_statistics_task():
 def update_patch_notes_task():
     """
     패치노트 크롤링 백그라운드 작업
-    5분마다 새로운 패치노트가 있는지 확인하고 DB에 저장합니다.
+    서버 시작시 즉시 실행 후 10분마다 새로운 패치노트가 있는지 확인하고 DB에 저장합니다.
     """
-    # 마지막 체크 시간 기록 (KST 타임존 사용)
-    last_check = datetime.now(KST)
+    # 서버 시작시 즉시 실행
+    first_run = True
     
     while True:
         try:
             # 현재 시간 (KST 타임존 사용)
             now = datetime.now(KST)
             
-            # 5분마다 체크 (300초)
-            if (now - last_check).total_seconds() >= 300:
+            if first_run:
+                print(f"[{now.strftime('%Y-%m-%d %H:%M:%S KST')}] 서버 시작: 패치노트 즉시 확인 중...")
+                new_count = check_new_patch_notes()
+                if new_count > 0:
+                    print(f"[{now.strftime('%Y-%m-%d %H:%M:%S KST')}] 새로운 패치노트 {new_count}개가 저장되었습니다.")
+                else:
+                    print(f"[{now.strftime('%Y-%m-%d %H:%M:%S KST')}] 새로운 패치노트가 없습니다.")
+                first_run = False
+            else:
                 print(f"[{now.strftime('%Y-%m-%d %H:%M:%S KST')}] 패치노트 업데이트 확인 중...")
                 new_count = check_new_patch_notes()
                 if new_count > 0:
@@ -291,18 +304,15 @@ def update_patch_notes_task():
                 else:
                     pass
                     # print(f"[{now.strftime('%Y-%m-%d %H:%M:%S KST')}] 새로운 패치노트가 없습니다.")
-                    
-                # 마지막 체크 시간 업데이트
-                last_check = now
             
-            # 30초 대기
-            time.sleep(30)
+            # 10분 대기
+            time.sleep(600)  # 10분 = 600초
                 
         except Exception as e:
             print(f"[패치노트 크롤링 오류] {e}")
             traceback.print_exc()
-            # 오류 발생 시 1분 대기 후 재시도
-            time.sleep(60)
+            # 오류 발생 시 5분 대기 후 재시도
+            time.sleep(300)
 
 def start_background_tasks():
     """

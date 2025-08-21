@@ -432,6 +432,9 @@ def generate_class_pie_chart():
             for img_type, img_name in screenshot_results.items():
                 logger.info(f"  - {img_type}: {img_name}")
             
+            # 기존 직업별 인구 파일들 정리 (최신 파일들 제외)
+            cleanup_old_class_distribution_images(image_dir, base_filename)
+            
             # 직업별 인구수 데이터 반환을 위한 준비
             job_result_data = []
             for row_data in job_data:
@@ -458,6 +461,39 @@ def generate_class_pie_chart():
         logger.error(f"직업별 인구수 차트 생성 중 오류 발생: {e}")
         return None, None
 
+def cleanup_old_class_distribution_images(image_dir, keep_base_filename):
+    """
+    직업별 인구 분포 이미지 파일들 중 최신 파일들을 제외하고 모두 삭제합니다.
+    
+    Args:
+        image_dir (str): 이미지 디렉토리 경로
+        keep_base_filename (str): 유지할 기본 파일명 (확장자 제외)
+    """
+    try:
+        # class_distribution_으로 시작하는 파일들 찾기
+        class_files = [f for f in os.listdir(image_dir) if f.startswith('class_distribution_')]
+        
+        # 유지할 파일들 패턴 (base_filename으로 시작하는 모든 파일)
+        keep_pattern = os.path.basename(keep_base_filename)
+        
+        # 유지할 파일들을 제외한 나머지 삭제
+        deleted_count = 0
+        for filename in class_files:
+            # 확장자를 제거한 파일명으로 비교
+            file_base = filename.rsplit('.', 1)[0]
+            if not file_base.startswith(keep_pattern):
+                file_path = os.path.join(image_dir, filename)
+                try:
+                    os.remove(file_path)
+                    deleted_count += 1
+                    logger.info(f"기존 직업별 인구 파일 삭제: {filename}")
+                except OSError as e:
+                    logger.warning(f"파일 삭제 실패: {filename}, 오류: {e}")
+        
+        if deleted_count > 0:
+            logger.info(f"직업별 인구 파일 정리 완료: {deleted_count}개 파일 삭제됨")
+    except Exception as e:
+        logger.error(f"직업별 인구 파일 정리 중 오류: {e}")
 
 def get_latest_class_chart():
     """

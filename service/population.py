@@ -210,10 +210,42 @@ def generate_population_graph(population_data):
         plt.savefig(filepath, dpi=100)
         plt.close('all')  # 모든 플롯 닫기
         
+        # 기존 인구 그래프 파일들 정리 (최신 파일 제외)
+        cleanup_old_population_images(image_dir, filename)
+        
         return filename
     except Exception as e:
         logger.error(f"인구수 그래프 생성 중 오류 발생: {e}")
         return None
+
+def cleanup_old_population_images(image_dir, keep_filename):
+    """
+    인구 그래프 이미지 파일들 중 최신 파일을 제외하고 모두 삭제합니다.
+    
+    Args:
+        image_dir (str): 이미지 디렉토리 경로
+        keep_filename (str): 유지할 파일명
+    """
+    try:
+        # population_graph_로 시작하는 파일들 찾기
+        population_files = [f for f in os.listdir(image_dir) if f.startswith('population_graph_') and f.endswith('.png')]
+        
+        # 유지할 파일을 제외한 나머지 삭제
+        deleted_count = 0
+        for filename in population_files:
+            if filename != keep_filename:
+                file_path = os.path.join(image_dir, filename)
+                try:
+                    os.remove(file_path)
+                    deleted_count += 1
+                    logger.info(f"기존 인구 그래프 파일 삭제: {filename}")
+                except OSError as e:
+                    logger.warning(f"파일 삭제 실패: {filename}, 오류: {e}")
+        
+        if deleted_count > 0:
+            logger.info(f"인구 그래프 파일 정리 완료: {deleted_count}개 파일 삭제됨")
+    except Exception as e:
+        logger.error(f"인구 그래프 파일 정리 중 오류: {e}")
 
 # 캐싱을 위한 변수들
 _population_cache = {

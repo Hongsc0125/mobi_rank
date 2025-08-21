@@ -7,8 +7,12 @@
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2"></script>
   <style>
+    @font-face {
+      font-family: 'D2Coding';
+      src: url('../D2Coding.ttf') format('truetype');
+    }
     body {
-      font-family: 'Poppins', sans-serif;
+      font-family: 'D2Coding', 'Malgun Gothic', 'Apple Gothic', sans-serif;
       background: linear-gradient(135deg, #ece9e6 0%, #ffffff 100%);
       margin: 0;
       padding: 20px;
@@ -172,7 +176,7 @@
             grid: { color: 'rgba(0,0,0,0.03)' },
             ticks: {
               color: '#555',
-              font: { family: "'Poppins', sans-serif" }
+              font: { family: "'D2Coding', 'Malgun Gothic', 'Apple Gothic', sans-serif" }
             }
           },
           y: {
@@ -181,7 +185,7 @@
             grid: { display: false },
             ticks: {
               color: '#555',
-              font: { family: "'Poppins', sans-serif" },
+              font: { family: "'D2Coding', 'Malgun Gothic', 'Apple Gothic', sans-serif" },
               autoSkip: false
             }
           }
@@ -206,7 +210,7 @@
               const pct = ctx.dataset.percentages[ctx.dataIndex].toFixed(2);
               return `${cnt}명  (${pct}%)`;
             },
-            font: { family: "'Poppins', sans-serif", weight: '600', size: 12 },
+            font: { family: "'D2Coding', 'Malgun Gothic', 'Apple Gothic', sans-serif", weight: '600', size: 12 },
             color: '#333',
             offset: 4
           }

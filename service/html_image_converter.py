@@ -29,14 +29,39 @@ def html_to_image(html_content):
         temp_html_path = os.path.join(temp_dir, f"temp_{unique_id}.html")
         output_image_path = os.path.join(images_dir, f"table_{unique_id}.png")
         
+        # 직업별 인구와 동일한 방식으로 폰트 설정 - 상대경로 사용
+        html_with_font = f"""
+        <!DOCTYPE html>
+        <html lang="ko">
+        <head>
+            <meta charset="UTF-8">
+            <style>
+                @font-face {{
+                    font-family: 'D2Coding';
+                    src: url('../D2Coding.ttf') format('truetype');
+                }}
+                body {{
+                    font-family: 'D2Coding', 'Malgun Gothic', 'Apple Gothic', sans-serif;
+                }}
+                * {{
+                    font-family: 'D2Coding', 'Malgun Gothic', 'Apple Gothic', sans-serif !important;
+                }}
+            </style>
+        </head>
+        <body>
+            {html_content}
+        </body>
+        </html>
+        """
+        
         # 임시 HTML 파일 작성
         with open(temp_html_path, 'w', encoding='utf-8') as f:
-            f.write(html_content)
+            f.write(html_with_font)
         
         # ChromeDriver 설치 확인 및 경로 가져오기
         chromedriver_path = chromedriver_autoinstaller.install()
         
-        # Chrome 옵션 설정
+        # Chrome 옵션 설정 (직업별 인구와 동일하게)
         chrome_options = Options()
         chrome_options.add_argument('--headless')
         chrome_options.add_argument('--disable-gpu')
