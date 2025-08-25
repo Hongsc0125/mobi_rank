@@ -108,11 +108,13 @@ class ChromeDriverPool:
         opts.add_argument("--disable-plugins-discovery")
         
         # 메모리 누수 방지 옵션 (기능은 유지)
-        opts.add_argument("--max_old_space_size=4096")  # 기존 4GB 유지
+        opts.add_argument("--max_old_space_size=2048")  # 4GB->2GB로 축소
         opts.add_argument("--memory-pressure-off")
         opts.add_argument("--disable-background-timer-throttling")
         opts.add_argument("--disable-renderer-backgrounding")
         opts.add_argument("--disable-backgrounding-occluded-windows")
+        opts.add_argument("--single-process")  # 단일 프로세스로 리소스 절약
+        opts.add_argument("--disable-dev-shm-usage")  # /dev/shm 사용 안함
         
         # 로그 완전 차단
         opts.add_experimental_option("excludeSwitches", ["enable-logging", "enable-automation"])
@@ -146,7 +148,7 @@ class ChromeDriverPool:
             except Exception as e:
                 logger.warning(f"드라이버 생성 시도 {attempt + 1}/{max_retries} 실패: {e}")
                 if attempt < max_retries - 1:
-                    time.sleep(2 * (attempt + 1))  # 점진적 대기 (2초씩 증가)
+                    time.sleep(5 * (attempt + 1))  # 점진적 대기 (5초씩 증가)로 여유시간 확보
                 else:
                     raise
     
@@ -216,7 +218,7 @@ class ChromeDriverPool:
         try:
             driver.quit()
             # 종료 후 추가 대기 시간으로 완전한 정리 보장
-            time.sleep(2)
+            time.sleep(5)
         except Exception as e:
             logger.warning(f"[{get_current_time().strftime('%Y-%m-%d %H:%M:%S KST')}] 드라이버 종료 오류: {e}")
         finally:
