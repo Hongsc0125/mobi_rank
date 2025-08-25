@@ -94,7 +94,7 @@ class ChromeDriverPool:
         opts.add_argument("--window-size=1200,800")
         opts.add_argument("--disable-blink-features=AutomationControlled")
         opts.add_argument("--disable-images")  # 속도 향상
-        opts.add_argument("--disable-web-security")
+        opts.add_argument("--remote-debugging-port=0")  # 동적 포트 할당으로 충돌 방지
         opts.add_argument("--disable-features=TranslateUI")
         opts.add_argument("--disable-ipc-flooding-protection")
         
@@ -215,6 +215,8 @@ class ChromeDriverPool:
         """드라이버 안전하게 종료"""
         try:
             driver.quit()
+            # 종료 후 추가 대기 시간으로 완전한 정리 보장
+            time.sleep(2)
         except Exception as e:
             logger.warning(f"[{get_current_time().strftime('%Y-%m-%d %H:%M:%S KST')}] 드라이버 종료 오류: {e}")
         finally:
