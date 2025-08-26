@@ -157,7 +157,8 @@ class ServerCrawler:
     def initialize_dedicated_driver(self):
         """서버 전용 드라이버 초기화"""
         try:
-            from service.driver_pool import driver_pool
+            from service.driver_pool import get_driver_pool
+            driver_pool = get_driver_pool()
             self.dedicated_driver = driver_pool.get_driver(timeout=60)
             logger.info(f"[{self.server_name}] 전용 드라이버 할당 완료")
         except Exception as e:
@@ -168,7 +169,8 @@ class ServerCrawler:
         """전용 드라이버 정리"""
         if self.dedicated_driver:
             try:
-                from service.driver_pool import driver_pool
+                from service.driver_pool import get_driver_pool
+                driver_pool = get_driver_pool()
                 driver_pool.return_driver(self.dedicated_driver)
                 logger.info(f"[{self.server_name}] 전용 드라이버 반환 완료")
             except Exception as e:
