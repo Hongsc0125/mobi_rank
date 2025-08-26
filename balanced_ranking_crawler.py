@@ -152,6 +152,29 @@ class ServerCrawler:
         self.server_id = server_info["id"]
         self.status_db = status_db
         self.worker_id = f"worker_{self.server_name}_{int(time.time())}"
+        self.dedicated_driver = None  # 전용 드라이버
+        
+    def initialize_dedicated_driver(self):
+        """서버 전용 드라이버 초기화"""
+        try:
+            from service.driver_pool import driver_pool
+            self.dedicated_driver = driver_pool.get_driver(timeout=60)
+            logger.info(f"[{self.server_name}] 전용 드라이버 할당 완료")
+        except Exception as e:
+            logger.error(f"[{self.server_name}] 전용 드라이버 할당 실패: {e}")
+            raise
+    
+    def cleanup_dedicated_driver(self):
+        """전용 드라이버 정리"""
+        if self.dedicated_driver:
+            try:
+                from service.driver_pool import driver_pool
+                driver_pool.return_driver(self.dedicated_driver)
+                logger.info(f"[{self.server_name}] 전용 드라이버 반환 완료")
+            except Exception as e:
+                logger.error(f"[{self.server_name}] 전용 드라이버 반환 실패: {e}")
+            finally:
+                self.dedicated_driver = None
         
     def is_character_updated_today(self, character_name):
         """캐릭터가 오늘 이미 업데이트되었는지 확인"""
@@ -208,6 +231,9 @@ class ServerCrawler:
         """서버별 크롤링 실행"""
         logger.info(f"🚀 {self.server_name} 서버 크롤링 시작")
         
+        # 전용 드라이버 초기화
+        self.initialize_dedicated_driver()
+        
         self.status_db.update_status(
             self.server_name,
             worker_id=self.worker_id,
@@ -262,8 +288,8 @@ class ServerCrawler:
                         from service.full_data import fetch_rank_via_dom, parse_rank_html
                         
                         try:
-                            # 전투력 랭킹만 검색 (div=1)
-                            html_data = fetch_rank_via_dom(self.server_name, char_name, rank_type=1)
+                            # 전투력 랭킹만 검색 (div=1) - 전용 드라이버 사용
+                            html_data = fetch_rank_via_dom(self.server_name, char_name, rank_type=1, dedicated_driver=self.dedicated_driver)
                             
                             if html_data:
                                 parsed_data = parse_rank_html(html_data)
@@ -316,6 +342,9 @@ class ServerCrawler:
                 current_character=f'오류: {str(e)[:50]}'
             )
         finally:
+            # 전용 드라이버 정리
+            self.cleanup_dedicated_driver()
+            
             self.status_db.update_status(
                 self.server_name,
                 status='stopped'

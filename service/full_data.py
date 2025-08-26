@@ -38,7 +38,7 @@ def get_driver():
     
     return webdriver.Chrome(service=service, options=opts)
 
-def fetch_rank_via_dom(server=None, name="", rank_type=1):
+def fetch_rank_via_dom(server=None, name="", rank_type=1, dedicated_driver=None):
     """DOM 조작을 통해 특정 서버와 캐릭터 이름으로 랭킹 데이터를 가져옵니다."""
     from selenium.webdriver.common.by import By
     from selenium.webdriver.support.ui import WebDriverWait
@@ -47,13 +47,18 @@ def fetch_rank_via_dom(server=None, name="", rank_type=1):
     
     list_url = f"https://mabinogimobile.nexon.com/Ranking/List?t={rank_type}"
     driver = None
+    should_return_driver = False
     
-    # 드라이버 풀에서 드라이버 가져오기
-    pool = get_driver_pool()
+    # 전용 드라이버가 있으면 사용, 없으면 풀에서 가져오기
+    if dedicated_driver:
+        driver = dedicated_driver
+    else:
+        # 드라이버 풀에서 드라이버 가져오기
+        pool = get_driver_pool()
+        driver = pool.get_driver()
+        should_return_driver = True
     
     try:
-        # 드라이버 풀에서 드라이버 얻기
-        driver = pool.get_driver()
         driver.set_page_load_timeout(30)
         wait = WebDriverWait(driver, 20)
         
@@ -110,8 +115,8 @@ def fetch_rank_via_dom(server=None, name="", rank_type=1):
         raise
     
     finally:
-        # 드라이버를 풀에 반환
-        if driver:
+        # 드라이버를 풀에 반환 (전용 드라이버가 아닌 경우만)
+        if driver and should_return_driver:
             pool.release_driver(driver)
 
 def select_server_option(driver, server_name):
