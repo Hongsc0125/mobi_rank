@@ -177,6 +177,20 @@ class ServerCrawler:
                 logger.error(f"[{self.server_name}] 전용 드라이버 반환 실패: {e}")
             finally:
                 self.dedicated_driver = None
+    
+    def _is_driver_valid(self):
+        """드라이버 유효성 검사"""
+        if not self.dedicated_driver:
+            return False
+        
+        try:
+            # 간단한 세션 ID 확인
+            _ = self.dedicated_driver.session_id
+            # 현재 URL 확인 (더 확실한 검증)
+            _ = self.dedicated_driver.current_url
+            return True
+        except Exception:
+            return False
         
     def is_character_updated_today(self, character_name):
         """캐릭터가 오늘 이미 업데이트되었는지 확인"""
@@ -290,6 +304,12 @@ class ServerCrawler:
                         from service.full_data import fetch_rank_via_dom, parse_rank_html
                         
                         try:
+                            # 드라이버 상태 확인 및 재생성
+                            if not self._is_driver_valid():
+                                logger.warning(f"[{self.server_name}] 드라이버 세션 만료, 재생성 중...")
+                                self.cleanup_dedicated_driver()
+                                self.initialize_dedicated_driver()
+                            
                             # 전투력 랭킹만 검색 (div=1) - 전용 드라이버 사용
                             html_data = fetch_rank_via_dom(self.server_name, char_name, rank_type=1, dedicated_driver=self.dedicated_driver)
                             
@@ -309,7 +329,18 @@ class ServerCrawler:
                                         processed_in_cycle += 1
                                         
                         except Exception as fetch_error:
-                            logger.error(f"{self.server_name} 데이터 수집 오류 ({char_name}): {fetch_error}")
+                            error_msg = str(fetch_error)
+                            logger.error(f"{self.server_name} 데이터 수집 오류 ({char_name}): {error_msg}")
+                            
+                            # invalid session id 오류 시 드라이버 재생성 시도
+                            if "invalid session id" in error_msg.lower():
+                                logger.warning(f"[{self.server_name}] 세션 오류로 인한 드라이버 재생성")
+                                try:
+                                    self.cleanup_dedicated_driver()
+                                    self.initialize_dedicated_driver()
+                                except Exception as reinit_error:
+                                    logger.error(f"[{self.server_name}] 드라이버 재생성 실패: {reinit_error}")
+                            
                             continue
                                         
                         self.status_db.update_status(
