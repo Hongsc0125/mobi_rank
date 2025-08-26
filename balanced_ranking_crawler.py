@@ -20,13 +20,14 @@ from service.db_session import SessionLocal, get_current_time, KST
 # fetch_all_ranks 대신 개별 함수 사용
 from service.db import insert_data
 
-# 로깅 설정 - 깔끔한 출력만
+# 로깅 설정 - 깔끔한 출력만 (로그 파일 크기 제한)
+from logging.handlers import RotatingFileHandler
 logging.basicConfig(
     level=logging.INFO,
     format='%(message)s',
     handlers=[
         logging.StreamHandler(),
-        logging.FileHandler('balanced_crawler.log', encoding='utf-8')
+        RotatingFileHandler('balanced_crawler.log', maxBytes=10*1024*1024, backupCount=2, encoding='utf-8')  # 10MB 제한
     ]
 )
 logger = logging.getLogger(__name__)

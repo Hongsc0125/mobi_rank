@@ -116,13 +116,13 @@ class ChromeDriverPool:
         opts.add_argument("--single-process")  # 단일 프로세스로 리소스 절약
         opts.add_argument("--disable-dev-shm-usage")  # /dev/shm 사용 안함
         
-        # 프로필 디렉토리 권한 문제 해결
-        import tempfile
-        import uuid
-        temp_dir = tempfile.mkdtemp(prefix=f"chrome_profile_{uuid.uuid4().hex[:8]}_")
-        opts.add_argument(f"--user-data-dir={temp_dir}")
+        # 프로필 디렉토리 권한 문제 해결 - 메모리 기반 임시 디렉토리 사용
+        opts.add_argument("--user-data-dir=/dev/null")  # 프로필 저장 비활성화
         opts.add_argument("--no-first-run")
         opts.add_argument("--disable-default-apps")
+        opts.add_argument("--incognito")  # 시크릿 모드로 프로필 저장 방지
+        opts.add_argument("--disk-cache-size=0")  # 디스크 캐시 비활성화
+        opts.add_argument("--media-cache-size=0")  # 미디어 캐시 비활성화
         
         # 로그 완전 차단
         opts.add_experimental_option("excludeSwitches", ["enable-logging", "enable-automation"])
@@ -223,29 +223,13 @@ class ChromeDriverPool:
     
     def _quit_driver(self, driver):
         """드라이버 안전하게 종료"""
-        temp_profile_dir = None
         try:
-            # 프로필 디렉토리 경로 추출
-            if hasattr(driver, 'service') and hasattr(driver.service, 'process'):
-                for arg in driver.service.process.args if driver.service.process else []:
-                    if arg.startswith('--user-data-dir='):
-                        temp_profile_dir = arg.replace('--user-data-dir=', '')
-                        break
-            
             driver.quit()
             # 종료 후 추가 대기 시간으로 완전한 정리 보장
-            time.sleep(5)
+            time.sleep(3)  # 5초에서 3초로 단축
         except Exception as e:
             logger.warning(f"[{get_current_time().strftime('%Y-%m-%d %H:%M:%S KST')}] 드라이버 종료 오류: {e}")
         finally:
-            # 임시 프로필 디렉토리 정리
-            if temp_profile_dir:
-                try:
-                    import shutil
-                    shutil.rmtree(temp_profile_dir, ignore_errors=True)
-                except Exception as cleanup_error:
-                    logger.warning(f"프로필 디렉토리 정리 실패: {cleanup_error}")
-            
             # 좀비 프로세스 방지를 위한 추가 정리
             try:
                 import psutil
