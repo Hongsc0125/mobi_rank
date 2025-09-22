@@ -19,8 +19,8 @@ def install_chromedriver_once():
     global _chromedriver_installed, _chromedriver_path
     with _chromedriver_install_lock:
         if not _chromedriver_installed:
-            # Chrome 140.0.7339.128 버전에 맞춰 ChromeDriver 버전 고정
-            _chromedriver_path = chromedriver_autoinstaller.install(version="140.0.7339.128")
+            # chromedriver_autoinstaller는 자동으로 현재 Chrome 버전에 맞는 드라이버를 찾아 설치
+            _chromedriver_path = chromedriver_autoinstaller.install()
             _chromedriver_installed = True
     return _chromedriver_path
 

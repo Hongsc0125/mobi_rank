@@ -49,7 +49,11 @@ def get_chrome_version():
 chrome_version = get_chrome_version()
 if chrome_version:
     print(f"감지된 Chrome 버전: {chrome_version}")
-    chromedriver_autoinstaller.install(version=chrome_version)
+    try:
+        # chromedriver_autoinstaller는 자동으로 현재 Chrome 버전에 맞는 드라이버를 찾아 설치
+        chromedriver_autoinstaller.install()
+    except Exception as e:
+        print(f"ChromeDriver 설치 실패: {e}")
 else:
     print("Chrome 버전 감지 실패, 최신 버전 사용")
     chromedriver_autoinstaller.install()
