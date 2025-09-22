@@ -19,7 +19,8 @@ def install_chromedriver_once():
     global _chromedriver_installed, _chromedriver_path
     with _chromedriver_install_lock:
         if not _chromedriver_installed:
-            _chromedriver_path = chromedriver_autoinstaller.install()
+            # Chrome 140.0.7339.128 버전에 맞춰 ChromeDriver 버전 고정
+            _chromedriver_path = chromedriver_autoinstaller.install(version="140.0.7339.128")
             _chromedriver_installed = True
     return _chromedriver_path
 
@@ -116,8 +117,10 @@ class ChromeDriverPool:
         opts.add_argument("--single-process")  # 단일 프로세스로 리소스 절약
         opts.add_argument("--disable-dev-shm-usage")  # /dev/shm 사용 안함
         
-        # 프로필 디렉토리 권한 문제 해결 - 메모리 기반 임시 디렉토리 사용
-        opts.add_argument("--user-data-dir=/dev/null")  # 프로필 저장 비활성화
+        # 프로필 디렉토리 권한 문제 해결 - 임시 디렉토리 사용
+        import tempfile
+        temp_dir = tempfile.mkdtemp(prefix="chrome_profile_")
+        opts.add_argument(f"--user-data-dir={temp_dir}")
         opts.add_argument("--no-first-run")
         opts.add_argument("--disable-default-apps")
         opts.add_argument("--incognito")  # 시크릿 모드로 프로필 저장 방지

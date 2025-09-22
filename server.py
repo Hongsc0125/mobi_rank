@@ -5,6 +5,7 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import BaseHTTPMiddleware
 from pydantic import BaseModel
+from contextlib import asynccontextmanager
 from api.rankData import rank_data
 import logging
 import sys
@@ -68,7 +69,65 @@ class IPWhitelistMiddleware(BaseHTTPMiddleware):
         # If IP is whitelisted, proceed with the request
         return await call_next(request)
 
-app = FastAPI(title="MabiRank API")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup
+    start_background_tasks()
+    logger.info("Background tasks started")
+
+    # 검색 큐 시스템 초기화
+    import threading
+    from service.search_queue import create_search_queue_table
+    from service.search_worker import search_worker_manager
+    from service.persistent_ranking_cache import initialize_ranking_cache
+
+    def init_systems():
+        try:
+            # 1. 검색 큐 테이블 생성
+            logger.info("검색 큐 시스템 초기화 시작...")
+            create_search_queue_table()
+            logger.info("검색 큐 테이블 생성 완료")
+
+            # 2. 검색 워커 시작 (1개 워커)
+            search_worker_manager.start_workers(worker_count=1)
+            logger.info("검색 워커 시작 완료")
+
+            # 3. 고속 랭킹 캐시 초기화
+            logger.info("고속 랭킹 캐시 초기화 시작...")
+            success = initialize_ranking_cache()
+            if success:
+                logger.info("고속 랭킹 캐시 초기화 성공")
+            else:
+                logger.warning("고속 랭킹 캐시 초기화 실패, 기존 방식 사용")
+
+        except Exception as e:
+            logger.error(f"시스템 초기화 중 오류: {e}", exc_info=True)
+
+    init_thread = threading.Thread(target=init_systems, daemon=True)
+    init_thread.start()
+
+    yield
+
+    # Shutdown
+    logger.info("서버 종료 중...")
+
+    # 검색 워커 정리
+    try:
+        from service.search_worker import search_worker_manager
+        search_worker_manager.stop_workers()
+        logger.info("검색 워커 정리 완료")
+    except Exception as e:
+        logger.error(f"검색 워커 정리 중 오류: {e}")
+
+    # 고속 랭킹 캐시 정리
+    try:
+        from service.persistent_ranking_cache import shutdown_ranking_cache
+        shutdown_ranking_cache()
+        logger.info("고속 랭킹 캐시 정리 완료")
+    except Exception as e:
+        logger.error(f"고속 랭킹 캐시 정리 중 오류: {e}")
+
+app = FastAPI(title="MabiRank API", lifespan=lifespan)
 
 # Add the IP whitelist middleware
 app.add_middleware(IPWhitelistMiddleware)
@@ -489,62 +548,7 @@ def cleanup_old_requests():
             "message": "검색 요청 정리 실패"
         }
 
-# Start background tasks when the server starts
-@app.on_event("startup")
-async def startup_event():
-    start_background_tasks()
-    logger.info("Background tasks started")
-    
-    # 검색 큐 시스템 초기화
-    import threading
-    from service.search_queue import create_search_queue_table
-    from service.search_worker import search_worker_manager
-    from service.persistent_ranking_cache import initialize_ranking_cache
-    
-    def init_systems():
-        try:
-            # 1. 검색 큐 테이블 생성
-            logger.info("검색 큐 시스템 초기화 시작...")
-            create_search_queue_table()
-            logger.info("검색 큐 테이블 생성 완료")
-            
-            # 2. 검색 워커 시작 (1개 워커)
-            search_worker_manager.start_workers(worker_count=1)
-            logger.info("검색 워커 시작 완료")
-            
-            # 3. 고속 랭킹 캐시 초기화
-            logger.info("고속 랭킹 캐시 초기화 시작...")
-            success = initialize_ranking_cache()
-            if success:
-                logger.info("고속 랭킹 캐시 초기화 성공")
-            else:
-                logger.warning("고속 랭킹 캐시 초기화 실패, 기존 방식 사용")
-                
-        except Exception as e:
-            logger.error(f"시스템 초기화 중 오류: {e}", exc_info=True)
-    
-    init_thread = threading.Thread(target=init_systems, daemon=True)
-    init_thread.start()
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
 
-# Shutdown event handler
-@app.on_event("shutdown")
-async def shutdown_event():
-    logger.info("서버 종료 중...")
-    
-    # 검색 워커 정리
-    try:
-        from service.search_worker import search_worker_manager
-        search_worker_manager.stop_workers()
-        logger.info("검색 워커 정리 완료")
-    except Exception as e:
-        logger.error(f"검색 워커 정리 중 오류: {e}")
-    
-    # 고속 랭킹 캐시 정리
-    try:
-        from service.persistent_ranking_cache import shutdown_ranking_cache
-        shutdown_ranking_cache()
-        logger.info("고속 랭킹 캐시 정리 완료")
-    except Exception as e:
-        logger.error(f"고속 랭킹 캐시 정리 중 오류: {e}")
-    
-    logger.info("서버 종료 완료")

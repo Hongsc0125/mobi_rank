@@ -15,6 +15,45 @@ from datetime import datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from sqlalchemy import text
 
+# Chrome 버전 자동 감지 후 맞는 ChromeDriver 설치
+import chromedriver_autoinstaller
+import subprocess
+import re
+
+def get_chrome_version():
+    """설치된 Chrome 버전을 감지"""
+    try:
+        # Windows에서 Chrome 버전 감지
+        result = subprocess.run([
+            'reg', 'query', 'HKEY_CURRENT_USER\\Software\\Google\\Chrome\\BLBeacon',
+            '/v', 'version'
+        ], capture_output=True, text=True)
+
+        if result.returncode == 0:
+            version = result.stdout.split()[-1]
+            return version
+
+        # 대안: Chrome 실행파일에서 버전 정보 읽기
+        chrome_path = r"C:\Program Files\Google\Chrome\Application\chrome.exe"
+        result = subprocess.run([chrome_path, '--version'], capture_output=True, text=True)
+        if result.returncode == 0:
+            version_match = re.search(r'(\d+\.\d+\.\d+\.\d+)', result.stdout)
+            if version_match:
+                return version_match.group(1)
+
+    except Exception as e:
+        print(f"Chrome 버전 감지 실패: {e}")
+        return None
+
+# Chrome 버전 감지 후 맞는 ChromeDriver 설치
+chrome_version = get_chrome_version()
+if chrome_version:
+    print(f"감지된 Chrome 버전: {chrome_version}")
+    chromedriver_autoinstaller.install(version=chrome_version)
+else:
+    print("Chrome 버전 감지 실패, 최신 버전 사용")
+    chromedriver_autoinstaller.install()
+
 # 프로젝트 모듈
 from service.db_session import SessionLocal, get_current_time, KST
 # fetch_all_ranks 대신 개별 함수 사용
