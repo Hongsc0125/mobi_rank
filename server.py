@@ -50,11 +50,12 @@ class IPWhitelistMiddleware(BaseHTTPMiddleware):
         
         # Define whitelist
         whitelist = [
-            "207.180.212.248", 
-            "127.0.0.1", 
-            "localhost", 
-            "59.12.47.180", 
+            "207.180.212.248",
+            "127.0.0.1",
+            "localhost",
+            "59.12.47.180",
             "2a02:c207:2258:5705::1",
+            "2400:d320:2258:5705::1",
             "218.233.5.245"
         ]
         
