@@ -201,7 +201,7 @@ def send_update_signal():
     """
     try:
         # 외부 API에 신호 전송 (GET 요청)
-        signal_url = "http://207.180.212.248:3000/api/patch_note"
+        signal_url = "http://kadanbot.duckdns.org:3000//api/patch_note"
         response = requests.get(signal_url, timeout=10)
         
         if response.status_code == 200:
