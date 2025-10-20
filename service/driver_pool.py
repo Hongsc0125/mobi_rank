@@ -83,7 +83,7 @@ class ChromeDriverPool:
                 opts.add_argument("--disable-background-timer-throttling")
                 opts.add_argument("--disable-renderer-backgrounding")
                 opts.add_argument("--disable-backgrounding-occluded-windows")
-                opts.add_argument("--single-process")  # 단일 프로세스로 리소스 절약
+                # opts.add_argument("--single-process")  # 안정성 문제로 제거
 
                 # 프로필 디렉토리 권한 문제 해결 - 임시 디렉토리 사용
                 import tempfile
@@ -104,8 +104,8 @@ class ChromeDriverPool:
                 # undetected-chromedriver 생성 (자동으로 Bot 감지 회피)
                 driver = uc.Chrome(
                     options=opts,
-                    use_subprocess=False,
-                    version_main=136  # Chrome 136 버전 명시
+                    use_subprocess=False
+                    # version_main 생략 - 자동 감지
                 )
 
                 # DOM 조작을 위한 타임아웃 설정
