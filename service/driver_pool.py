@@ -104,8 +104,8 @@ class ChromeDriverPool:
                 # undetected-chromedriver 생성 (자동으로 Bot 감지 회피)
                 driver = uc.Chrome(
                     options=opts,
-                    use_subprocess=False
-                    # version_main 생략 - 자동 감지
+                    use_subprocess=False,
+                    version_main=136  # 현재 설치된 Chrome 버전과 일치
                 )
 
                 # DOM 조작을 위한 타임아웃 설정
