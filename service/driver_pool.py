@@ -2,30 +2,10 @@ import threading
 import time
 import logging
 import queue
-from selenium import webdriver
-from selenium.webdriver.chrome.service import Service
-from selenium.webdriver.chrome.options import Options
-import chromedriver_autoinstaller
+import undetected_chromedriver as uc
 from service.db_session import get_current_time
 from datetime import timedelta
 import os
-
-# 싱글톤 락으로 chromedriver 설치를 한 번만 보장
-_chromedriver_installed = False
-_chromedriver_install_lock = threading.Lock()
-_chromedriver_path = None
-
-def install_chromedriver_once():
-    global _chromedriver_installed, _chromedriver_path
-    with _chromedriver_install_lock:
-        if not _chromedriver_installed:
-            # chromedriver_autoinstaller는 자동으로 현재 Chrome 버전에 맞는 드라이버를 찾아 설치
-            _chromedriver_path = chromedriver_autoinstaller.install()
-            _chromedriver_installed = True
-    return _chromedriver_path
-
-# 서버 시작 시 한 번만 설치
-install_chromedriver_once()
 
 # 로그 설정
 logger = logging.getLogger(__name__)
@@ -67,94 +47,77 @@ class ChromeDriverPool:
         logger.info(f"[{get_current_time().strftime('%Y-%m-%d %H:%M:%S KST')}] 크롬 드라이버 풀 초기화 완료")
     
     def _create_new_driver(self):
-        """새 크롬 드라이버 인스턴스 생성"""
-        # install_chromedriver_once()은 이미 서버 시작 시 한 번만 호출됨
-        global _chromedriver_path
-        # 드라이버 설치 경로가 없으면 재시도(백오프)
-        retry = 0
-        while _chromedriver_path is None or not os.path.exists(_chromedriver_path):
-            logger.warning("chromedriver 경로가 유효하지 않아 재설치 시도")
-            install_chromedriver_once()
-            retry += 1
-            time.sleep(min(2 ** retry, 10))  # 점진적 대기 (최대 10초)
-            if retry > 5:
-                raise RuntimeError("chromedriver 설치 실패: 경로 없음")
-
-        opts = Options()
-        
-        # Chrome 안정성 개선 옵션
-        opts.add_argument("--headless=new")
-        opts.add_argument("--no-sandbox")
-        opts.add_argument("--disable-dev-shm-usage")
-        opts.add_argument("--disable-gpu")
-        opts.add_argument("--disable-extensions")
-        opts.add_argument("--disable-logging")
-        opts.add_argument("--disable-gpu-sandbox")
-        opts.add_argument("--silent")
-        opts.add_argument("--log-level=3")
-        opts.add_argument("--window-size=1200,800")
-        opts.add_argument("--disable-blink-features=AutomationControlled")
-        opts.add_argument("--disable-images")  # 속도 향상
-        opts.add_argument("--remote-debugging-port=0")  # 동적 포트 할당으로 충돌 방지
-        opts.add_argument("--disable-features=TranslateUI")
-        opts.add_argument("--disable-ipc-flooding-protection")
-        
-        # 포트 충돌 방지 옵션 - 완전 비활성화
-        opts.add_argument("--disable-dev-tools")
-        opts.add_argument("--disable-background-networking")
-        opts.add_argument("--disable-default-apps")
-        opts.add_argument("--disable-sync")
-        opts.add_argument("--disable-translate")
-        opts.add_argument("--disable-plugins")
-        opts.add_argument("--disable-plugins-discovery")
-        
-        # 메모리 누수 방지 옵션 (기능은 유지)
-        opts.add_argument("--max_old_space_size=2048")  # 4GB->2GB로 축소
-        opts.add_argument("--memory-pressure-off")
-        opts.add_argument("--disable-background-timer-throttling")
-        opts.add_argument("--disable-renderer-backgrounding")
-        opts.add_argument("--disable-backgrounding-occluded-windows")
-        opts.add_argument("--single-process")  # 단일 프로세스로 리소스 절약
-        opts.add_argument("--disable-dev-shm-usage")  # /dev/shm 사용 안함
-        
-        # 프로필 디렉토리 권한 문제 해결 - 임시 디렉토리 사용
-        import tempfile
-        temp_dir = tempfile.mkdtemp(prefix="chrome_profile_")
-        opts.add_argument(f"--user-data-dir={temp_dir}")
-        opts.add_argument("--no-first-run")
-        opts.add_argument("--disable-default-apps")
-        opts.add_argument("--incognito")  # 시크릿 모드로 프로필 저장 방지
-        opts.add_argument("--disk-cache-size=0")  # 디스크 캐시 비활성화
-        opts.add_argument("--media-cache-size=0")  # 미디어 캐시 비활성화
-        
-        # 로그 완전 차단
-        opts.add_experimental_option("excludeSwitches", ["enable-logging", "enable-automation"])
-        opts.add_experimental_option('useAutomationExtension', False)
-        opts.add_experimental_option("detach", False)
-        
-        # User-Agent 설정
-        opts.add_argument('--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
-        
-        # 로그 완전 차단을 위한 Service 설정
-        service = Service(executable_path=_chromedriver_path)
-        service.log_path = "NUL" if os.name == "nt" else "/dev/null"
-        
+        """새 크롬 드라이버 인스턴스 생성 (undetected-chromedriver 사용)"""
         # 재시도 로직 추가
         max_retries = 3
         for attempt in range(max_retries):
             try:
-                driver = webdriver.Chrome(service=service, options=opts)
-                
+                # 각 시도마다 새로운 ChromeOptions 객체 생성 (재사용 방지)
+                opts = uc.ChromeOptions()
+
+                # Chrome 안정성 개선 옵션
+                opts.add_argument("--headless=new")
+                opts.add_argument("--no-sandbox")
+                opts.add_argument("--disable-dev-shm-usage")
+                opts.add_argument("--disable-gpu")
+                opts.add_argument("--window-size=1920,1080")
+                opts.add_argument("--disable-gpu-sandbox")
+                opts.add_argument("--silent")
+                opts.add_argument("--log-level=3")
+                opts.add_argument("--disable-images")  # 속도 향상
+                opts.add_argument("--disable-features=TranslateUI")
+                opts.add_argument("--disable-ipc-flooding-protection")
+
+                # 포트 충돌 방지 옵션 - 완전 비활성화
+                opts.add_argument("--disable-dev-tools")
+                opts.add_argument("--disable-background-networking")
+                opts.add_argument("--disable-default-apps")
+                opts.add_argument("--disable-sync")
+                opts.add_argument("--disable-translate")
+                opts.add_argument("--disable-plugins")
+                opts.add_argument("--disable-plugins-discovery")
+
+                # 메모리 누수 방지 옵션 (기능은 유지)
+                opts.add_argument("--max_old_space_size=2048")  # 4GB->2GB로 축소
+                opts.add_argument("--memory-pressure-off")
+                opts.add_argument("--disable-background-timer-throttling")
+                opts.add_argument("--disable-renderer-backgrounding")
+                opts.add_argument("--disable-backgrounding-occluded-windows")
+                opts.add_argument("--single-process")  # 단일 프로세스로 리소스 절약
+
+                # 프로필 디렉토리 권한 문제 해결 - 임시 디렉토리 사용
+                import tempfile
+                temp_dir = tempfile.mkdtemp(prefix="chrome_profile_")
+                opts.add_argument(f"--user-data-dir={temp_dir}")
+                opts.add_argument("--no-first-run")
+                opts.add_argument("--incognito")  # 시크릿 모드로 프로필 저장 방지
+                opts.add_argument("--disk-cache-size=0")  # 디스크 캐시 비활성화
+                opts.add_argument("--media-cache-size=0")  # 미디어 캐시 비활성화
+
+                # 로그 완전 차단 (experimental options 제거 - Chrome 136+에서 지원 안함)
+                # opts.add_experimental_option("excludeSwitches", ["enable-logging", "enable-automation"])
+                # opts.add_experimental_option('useAutomationExtension', False)
+
+                # User-Agent 설정
+                opts.add_argument('--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36')
+
+                # undetected-chromedriver 생성 (자동으로 Bot 감지 회피)
+                driver = uc.Chrome(
+                    options=opts,
+                    use_subprocess=False,
+                    version_main=136  # Chrome 136 버전 명시
+                )
+
                 # DOM 조작을 위한 타임아웃 설정
                 driver.set_page_load_timeout(30)
                 driver.implicitly_wait(10)
-                
+
                 # webdriver 속성 숨기기 (anti-detection)
                 driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
-                
+
                 # 연결 테스트 (간단한 속성 확인만)
                 _ = driver.session_id
-                
+
                 return driver
             except Exception as e:
                 logger.warning(f"드라이버 생성 시도 {attempt + 1}/{max_retries} 실패: {e}")

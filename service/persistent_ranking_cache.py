@@ -8,10 +8,7 @@ JavaScript로 서버 선택과 캐릭터 검색을 수행하여 속도를 대폭
 import time
 import logging
 import threading
-import chromedriver_autoinstaller
-from selenium import webdriver
-from selenium.webdriver.chrome.service import Service
-from selenium.webdriver.chrome.options import Options
+import undetected_chromedriver as uc
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
@@ -21,66 +18,58 @@ import pytz
 from service.db_session import KST
 from service.full_data import parse_rank_html
 import gc
-# sequential_ranking_crawler의 함수들을 직접 import하지 않고 
+# sequential_ranking_crawler의 함수들을 직접 import하지 않고
 # 필요한 함수들을 이 파일에서 구현하거나 다른 방식으로 처리
 
 logger = logging.getLogger(__name__)
 
 def get_driver_for_cache(high_performance=True):
-    """캐시용 드라이버 생성 (안정성 옵션 포함)"""
-    try:
-        chromedriver_autoinstaller.install()
-        logger.info("ChromeDriver 설치 확인 완료")
-    except Exception as e:
-        logger.error(f"ChromeDriver 설치 실패: {e}")
-        raise
-    
-    opts = Options()
-    
-    # 필수 옵션
-    opts.add_argument("--headless=new")
-    opts.add_argument("--no-sandbox")
-    opts.add_argument("--disable-dev-shm-usage")
-    opts.add_argument("--disable-gpu")
-    opts.add_argument("--disable-extensions")
-    opts.add_argument("--disable-logging")
-    opts.add_argument("--silent")
-    opts.add_argument("--log-level=3")
-    opts.add_argument("--window-size=1200,800")
-    
-    # 동적 포트 할당
-    opts.add_argument("--remote-debugging-port=0")
-    
-    # 안정성 향상 옵션
-    opts.add_argument("--disable-crash-reporter")
-    opts.add_argument("--disable-in-process-stack-traces")
-    opts.add_argument("--no-first-run")
-    opts.add_argument("--disable-background-networking")
-    
-    # Bot 감지 회피 옵션
-    opts.add_argument("--disable-blink-features=AutomationControlled")
-    opts.add_argument("--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36")
-    
-    # 로그 차단
-    opts.add_experimental_option("excludeSwitches", ["enable-logging", "enable-automation"])
-    opts.add_experimental_option('useAutomationExtension', False)
-    
-    if high_performance:
-        opts.add_argument("--disable-default-apps")
-        opts.add_argument("--disable-background-timer-throttling")
-    
-    service = Service()
+    """캐시용 드라이버 생성 (undetected-chromedriver 사용)"""
     import os
-    service.log_path = "NUL" if os.name == "nt" else "/dev/null"
-    
+
     # 재시도 로직
     for attempt in range(3):
         try:
-            driver = webdriver.Chrome(service=service, options=opts)
-            driver.set_page_load_timeout(45)
+            # 각 시도마다 새로운 ChromeOptions 객체 생성 (재사용 방지)
+            options = uc.ChromeOptions()
+
+            # 필수 옵션
+            options.add_argument("--headless=new")
+            options.add_argument("--no-sandbox")
+            options.add_argument("--disable-dev-shm-usage")
+            options.add_argument("--disable-gpu")
+            options.add_argument("--window-size=1920,1080")
+
+            # 안정성 향상 옵션
+            options.add_argument("--disable-crash-reporter")
+            options.add_argument("--disable-in-process-stack-traces")
+            options.add_argument("--no-first-run")
+            options.add_argument("--disable-background-networking")
+
+            if high_performance:
+                options.add_argument("--disable-default-apps")
+                options.add_argument("--disable-background-timer-throttling")
+
+            # 로그 차단
+            options.add_argument("--log-level=3")
+            options.add_argument("--silent")
+
+            # User-Agent 설정
+            options.add_argument('--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36')
+
+            # undetected-chromedriver 생성 (자동으로 Bot 감지 회피)
+            driver = uc.Chrome(
+                options=options,
+                use_subprocess=False,
+                version_main=136  # Chrome 136 버전 명시
+            )
+            driver.set_page_load_timeout(60)
             driver.implicitly_wait(10)
+
+            logger.info("undetected-chromedriver 초기화 성공")
             return driver
         except Exception as e:
+            logger.warning(f"드라이버 생성 시도 {attempt + 1}/3 실패: {e}")
             if attempt == 2:
                 raise e
             time.sleep(2 ** attempt)
