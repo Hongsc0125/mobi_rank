@@ -10,7 +10,7 @@ from service.population import get_all_server_populations, generate_population_g
 from service.population_statistics import update_population_statistics
 from service.patch_note_crawler import check_new_patch_notes
 
-# #logger = logging.get#logger(__name__)
+logger = logging.getLogger(__name__)
 
 def get_outdated_characters():
     db = SessionLocal()
@@ -278,80 +278,102 @@ def update_population_statistics_task():
 def update_patch_notes_task():
     """
     패치노트 크롤링 백그라운드 작업
-    서버 시작시 즉시 실행 후 10분마다 새로운 패치노트가 있는지 확인하고 DB에 저장합니다.
+    - 10분마다 경량 체크 (프록시 미사용, 비용 없음)
+    - 페이지 변경 감지 시에만 실제 크롤링 (프록시 사용)
+    - 9시 정각 근처에서도 정확하게 감지 가능
     """
+    from service.patch_note_crawler import check_page_changed_lightweight
+
     # 서버 시작시 즉시 실행
     first_run = True
-    
+
     while True:
         try:
             # 현재 시간 (KST 타임존 사용)
             now = datetime.now(KST)
-            
+
             if first_run:
-                print(f"[{now.strftime('%Y-%m-%d %H:%M:%S KST')}] 서버 시작: 패치노트 즉시 확인 중...")
+                # 서버 시작 시 즉시 실행
+                logger.info(f"[{now.strftime('%Y-%m-%d %H:%M:%S KST')}] 서버 시작: 패치노트 즉시 확인 중...")
                 new_count = check_new_patch_notes()
                 if new_count > 0:
-                    print(f"[{now.strftime('%Y-%m-%d %H:%M:%S KST')}] 새로운 패치노트 {new_count}개가 저장되었습니다.")
+                    logger.info(f"[{now.strftime('%Y-%m-%d %H:%M:%S KST')}] 새로운 패치노트 {new_count}개가 저장되었습니다.")
                 else:
-                    print(f"[{now.strftime('%Y-%m-%d %H:%M:%S KST')}] 새로운 패치노트가 없습니다.")
+                    logger.info(f"[{now.strftime('%Y-%m-%d %H:%M:%S KST')}] 새로운 패치노트가 없습니다.")
                 first_run = False
             else:
-                print(f"[{now.strftime('%Y-%m-%d %H:%M:%S KST')}] 패치노트 업데이트 확인 중...")
-                new_count = check_new_patch_notes()
-                if new_count > 0:
-                    print(f"[{now.strftime('%Y-%m-%d %H:%M:%S KST')}] 새로운 패치노트 {new_count}개가 저장되었습니다.")
+                # 10분마다 경량 체크 (프록시 비용 없음)
+                logger.info(f"[{now.strftime('%Y-%m-%d %H:%M:%S KST')}] 패치노트 페이지 변경 체크 중... (경량 모드)")
+                page_changed = check_page_changed_lightweight()
+
+                if page_changed:
+                    # 페이지 변경 감지 시에만 프록시 사용하여 실제 크롤링
+                    logger.info(f"[{now.strftime('%Y-%m-%d %H:%M:%S KST')}] 페이지 변경 감지! 실제 크롤링 시작... (프록시 사용)")
+                    new_count = check_new_patch_notes()
+                    if new_count > 0:
+                        logger.info(f"[{now.strftime('%Y-%m-%d %H:%M:%S KST')}] 새로운 패치노트 {new_count}개가 저장되었습니다.")
+                    else:
+                        logger.info(f"[{now.strftime('%Y-%m-%d %H:%M:%S KST')}] 변경 감지되었으나 새 패치노트는 없습니다.")
                 else:
+                    # 변경 없으면 로그 생략 (조용히)
                     pass
-                    # print(f"[{now.strftime('%Y-%m-%d %H:%M:%S KST')}] 새로운 패치노트가 없습니다.")
-            
-            # 10분 대기
+
+            # 10분 대기 (프록시 비용 절약하면서 정확한 타이밍 보장)
             time.sleep(600)  # 10분 = 600초
-                
+
         except Exception as e:
-            print(f"[패치노트 크롤링 오류] {e}")
-            traceback.print_exc()
-            # 오류 발생 시 5분 대기 후 재시도
-            time.sleep(300)
+            logger.error(f"[패치노트 크롤링 오류] {e}")
+            logger.error(traceback.format_exc())
+            # 오류 발생 시 10분 대기 후 재시도
+            time.sleep(600)
 
 def start_background_tasks():
     """
     모든 백그라운드 작업을 시작합니다.
     각 작업은 도그형으로 실행됩니다.
     """
-    # 크롬 드라이버 풀 초기화
-    from service.driver_pool import get_driver_pool
-    driver_pool = get_driver_pool()  # 3개의 크롬 드라이버를 상시 유지하는 풀 초기화
-    print(f"크롬 드라이버 풀 초기화 완료 (최대 3개 드라이버 유지)")
-    
+    print("=" * 60)
+    print("백그라운드 작업 초기화 중...")
+    print("=" * 60)
+
+    # 크롬 드라이버 풀 초기화 - 비활성화
+    # from service.driver_pool import get_driver_pool
+    # driver_pool = get_driver_pool()  # 3개의 크롬 드라이버를 상시 유지하는 풀 초기화
+    print("[비활성화] 크롬 드라이버 풀 초기화")
+
     # 캐릭터 업데이트 스레드 비활성화 (sequential_ranking_crawler가 담당)
     # update_thread = threading.Thread(target=background_update_task, daemon=True)
     # update_thread.name = "character-update-thread"
     # update_thread.start()
-    print("개별 캐릭터 업데이트는 sequential_ranking_crawler가 담당하므로 비활성화됨")
-    
-    # 인구수 업데이트 스레드 시작 (1개 쓰레드만 배정)
-    population_thread = threading.Thread(target=update_population_data, daemon=True)
-    population_thread.name = "population-update-thread"
-    population_thread.start()
-    print("인구수 업데이트 백그라운드 쓰레드 시작됨 (1개 쓰레드)")
-    
-    # 직업별 인구 통계 업데이트 스레드 시작
-    class_population_thread = threading.Thread(target=update_class_population_data, daemon=True)
-    class_population_thread.name = "class-population-update-thread"
-    class_population_thread.start()
-    print("직업별 인구 통계 업데이트 백그라운드 쓰레드 시작됨")
-    
-    # 인구수 통계 업데이트 스레드 시작
-    stats_thread = threading.Thread(target=update_population_statistics_task, daemon=True)
-    stats_thread.name = "population-statistics-thread"
-    stats_thread.start()
-    print("인구수 통계 업데이트 백그라운드 쓰레드 시작됨")
-    
-    # 패치노트 크롤링 스레드 시작
+    print("[비활성화] 개별 캐릭터 업데이트")
+
+    # 인구수 업데이트 스레드 시작 (1개 쓰레드만 배정) - 비활성화
+    # population_thread = threading.Thread(target=update_population_data, daemon=True)
+    # population_thread.name = "population-update-thread"
+    # population_thread.start()
+    print("[비활성화] 인구수 업데이트 백그라운드 쓰레드")
+
+    # 직업별 인구 통계 업데이트 스레드 시작 - 비활성화
+    # class_population_thread = threading.Thread(target=update_class_population_data, daemon=True)
+    # class_population_thread.name = "class-population-update-thread"
+    # class_population_thread.start()
+    print("[비활성화] 직업별 인구 통계 업데이트 백그라운드 쓰레드")
+
+    # 인구수 통계 업데이트 스레드 시작 - 비활성화
+    # stats_thread = threading.Thread(target=update_population_statistics_task, daemon=True)
+    # stats_thread.name = "population-statistics-thread"
+    # stats_thread.start()
+    print("[비활성화] 인구수 통계 업데이트 백그라운드 쓰레드")
+
+    # 패치노트 크롤링 스레드 시작 - 활성화
     patch_note_thread = threading.Thread(target=update_patch_notes_task, daemon=True)
     patch_note_thread.name = "patch-note-crawler-thread"
     patch_note_thread.start()
-    print("패치노트 크롤링 백그라운드 쓰레드 시작됨")
-    
-    return [population_thread, class_population_thread, stats_thread, patch_note_thread]
+    print("[활성화] 패치노트 크롤링 백그라운드 쓰레드 시작됨")
+
+    print("=" * 60)
+    print("백그라운드 작업 초기화 완료")
+    print("활성화된 작업: 패치노트 크롤링만")
+    print("=" * 60)
+
+    return [patch_note_thread]
