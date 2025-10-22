@@ -12,10 +12,17 @@ NC='\033[0m' # No Color
 PROJECT_DIR="/root/mobi_rank"
 PID_FILE="$PROJECT_DIR/server.pid"
 LOG_FILE="$PROJECT_DIR/server.log"
-PYTHON_CMD="python"
+VENV_PATH="$PROJECT_DIR/.venv"
+PYTHON_CMD="$VENV_PATH/bin/python"
 
 # 현재 디렉토리로 이동
 cd "$PROJECT_DIR" || exit 1
+
+# 가상환경 확인
+if [ ! -d "$VENV_PATH" ]; then
+    echo -e "${RED}❌ 가상환경을 찾을 수 없습니다: $VENV_PATH${NC}"
+    exit 1
+fi
 
 # 서버가 이미 실행 중인지 확인
 if [ -f "$PID_FILE" ]; then
