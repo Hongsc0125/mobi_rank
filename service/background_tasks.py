@@ -278,8 +278,8 @@ def update_population_statistics_task():
 def update_patch_notes_task():
     """
     패치노트 크롤링 백그라운드 작업
-    - 10분마다 경량 체크 (프록시 미사용, 비용 없음)
-    - 페이지 변경 감지 시에만 실제 크롤링 (프록시 사용)
+    - 10분마다 경량 체크 (제목 목록만 확인)
+    - 페이지 변경 감지 시에만 상세 크롤링 (모든 패치노트 상세 내용)
     - 9시 정각 근처에서도 정확하게 감지 가능
     """
     from service.patch_note_crawler import check_page_changed_lightweight
@@ -302,13 +302,13 @@ def update_patch_notes_task():
                     logger.info(f"[{now.strftime('%Y-%m-%d %H:%M:%S KST')}] 새로운 패치노트가 없습니다.")
                 first_run = False
             else:
-                # 10분마다 경량 체크 (프록시 비용 없음)
+                # 10분마다 경량 체크 (제목 목록만 확인)
                 logger.info(f"[{now.strftime('%Y-%m-%d %H:%M:%S KST')}] 패치노트 페이지 변경 체크 중... (경량 모드)")
                 page_changed = check_page_changed_lightweight()
 
                 if page_changed:
-                    # 페이지 변경 감지 시에만 프록시 사용하여 실제 크롤링
-                    logger.info(f"[{now.strftime('%Y-%m-%d %H:%M:%S KST')}] 페이지 변경 감지! 실제 크롤링 시작... (프록시 사용)")
+                    # 페이지 변경 감지 시에만 상세 크롤링
+                    logger.info(f"[{now.strftime('%Y-%m-%d %H:%M:%S KST')}] 페이지 변경 감지! 상세 크롤링 시작...")
                     new_count = check_new_patch_notes()
                     if new_count > 0:
                         logger.info(f"[{now.strftime('%Y-%m-%d %H:%M:%S KST')}] 새로운 패치노트 {new_count}개가 저장되었습니다.")
@@ -318,7 +318,7 @@ def update_patch_notes_task():
                     # 변경 없으면 로그 생략 (조용히)
                     pass
 
-            # 10분 대기 (프록시 비용 절약하면서 정확한 타이밍 보장)
+            # 10분 대기 (빈번한 체크로 9시 정각 감지 보장)
             time.sleep(600)  # 10분 = 600초
 
         except Exception as e:

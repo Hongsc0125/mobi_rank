@@ -34,19 +34,19 @@ _last_page_hash = None
 
 def check_page_changed_lightweight():
     """
-    프록시 없이 경량으로 패치노트 목록 변경 여부만 체크합니다.
-    Playwright 사용하지만 프록시는 미사용하여 비용을 절약합니다.
+    경량으로 패치노트 목록 변경 여부만 체크합니다.
+    프록시를 사용하지만 상세 크롤링보다 빠르고 간단합니다.
 
     Returns:
         bool: 패치노트 목록이 변경되었거나 첫 실행이면 True, 변경 없으면 False
     """
     global _last_page_hash
     try:
-        # 프록시 없이 Playwright로 간단히 체크 (프록시 비용 없음)
-        logger.info(f"경량 체크: 패치노트 페이지 변경 여부 확인 중 (프록시 미사용)")
+        # Playwright로 간단히 체크 (상세 크롤링보다 빠름)
+        logger.info(f"경량 체크: 패치노트 페이지 변경 여부 확인 중")
 
         with sync_playwright() as p:
-            # 브라우저 실행 (헤드리스, 프록시 없음)
+            # 브라우저 실행
             browser = p.chromium.launch(
                 headless=True,
                 args=[
@@ -56,13 +56,13 @@ def check_page_changed_lightweight():
                 ]
             )
 
-            # 컨텍스트 생성 (프록시 없음!)
+            # 컨텍스트 생성 (프록시 사용 - Cloudflare 우회 필요)
             context = browser.new_context(
                 viewport={'width': 1920, 'height': 1080},
                 user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
                 locale='ko-KR',
-                timezone_id='Asia/Seoul'
-                # proxy=PROXY_CONFIG 제거 - 프록시 비용 절약
+                timezone_id='Asia/Seoul',
+                proxy=PROXY_CONFIG  # Cloudflare 우회를 위해 프록시 필요
             )
 
             # 페이지 생성 및 이동
