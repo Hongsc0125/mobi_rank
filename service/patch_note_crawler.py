@@ -35,23 +35,55 @@ _last_page_hash = None
 def check_page_changed_lightweight():
     """
     프록시 없이 경량으로 패치노트 목록 변경 여부만 체크합니다.
-    프록시 비용을 절약하기 위해 간단한 HTTP 요청으로 패치노트 제목 목록만 비교합니다.
+    Playwright 사용하지만 프록시는 미사용하여 비용을 절약합니다.
 
     Returns:
         bool: 패치노트 목록이 변경되었거나 첫 실행이면 True, 변경 없으면 False
     """
     global _last_page_hash
     try:
-        # 프록시 없이 간단한 GET 요청 (비용 없음)
+        # 프록시 없이 Playwright로 간단히 체크 (프록시 비용 없음)
         logger.info(f"경량 체크: 패치노트 페이지 변경 여부 확인 중 (프록시 미사용)")
-        response = requests.get(UPDATE_LIST_URL, timeout=15, headers={
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-        })
+
+        with sync_playwright() as p:
+            # 브라우저 실행 (헤드리스, 프록시 없음)
+            browser = p.chromium.launch(
+                headless=True,
+                args=[
+                    '--no-sandbox',
+                    '--disable-dev-shm-usage',
+                    '--disable-blink-features=AutomationControlled',
+                ]
+            )
+
+            # 컨텍스트 생성 (프록시 없음!)
+            context = browser.new_context(
+                viewport={'width': 1920, 'height': 1080},
+                user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                locale='ko-KR',
+                timezone_id='Asia/Seoul'
+                # proxy=PROXY_CONFIG 제거 - 프록시 비용 절약
+            )
+
+            # 페이지 생성 및 이동
+            page = context.new_page()
+            page.goto(UPDATE_LIST_URL, timeout=60000, wait_until="load")
+
+            # 동적 콘텐츠 로딩 대기
+            import time
+            time.sleep(2)
+
+            # HTML 가져오기
+            html_content = page.content()
+
+            # 브라우저 종료
+            context.close()
+            browser.close()
 
         # BeautifulSoup으로 파싱
-        soup = BeautifulSoup(response.text, "html.parser")
+        soup = BeautifulSoup(html_content, "html.parser")
 
-        # 패치노트 제목들만 추출 (동적 광고나 타임스탬프 제외)
+        # 패치노트 제목들만 추출
         titles = []
         for a_tag in soup.select('ul.list li.item a.title'):
             title = a_tag.text.strip()
