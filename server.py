@@ -32,12 +32,8 @@ for log_name in ['api', 'service']:
     module_logger = logging.getLogger(log_name)
     module_logger.setLevel(logging.INFO)
     module_logger.propagate = True
-    
-    # 핸들러가 없으면 추가
-    if not module_logger.handlers:
-        handler = logging.StreamHandler(sys.stdout)
-        handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
-        module_logger.addHandler(handler)
+    # 핸들러는 루트 로거에만 있으면 되므로 추가 핸들러 제거
+    # (propagate=True면 루트 로거의 핸들러로 자동 전파됨)
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
