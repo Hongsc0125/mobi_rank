@@ -7,3 +7,13 @@ __pycache__
 *.json
 *.lock
 /crawler_env/*
+
+# Test and debug files
+test_*.py
+debug_*.py
+quick_test.py
+
+# Temporary files and directories
+temp/
+*.pid
+.env
