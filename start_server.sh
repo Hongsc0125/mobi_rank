@@ -1,5 +1,7 @@
 #!/bin/bash
 
+cd "$(dirname "$0")"
+
 # Mabinogi Mobile 랭킹 서버 시작 스크립트
 
 # 색상 정의

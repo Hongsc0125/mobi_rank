@@ -16,3 +16,5 @@ pandas
 jinja2
 Pillow
 selenium-wire
+schedule
+playwright
