@@ -399,18 +399,32 @@ def check_new_patch_notes():
         
         # 새로운 패치노트 저장
         new_count = 0
+        MAX_RETRIES = 3
+        RETRY_DELAY = 30  # 재시도 대기 시간 (초)
+
         for note in new_notes:
             if note["title"] in existing_titles:
                 continue
-                
+
             logger.info(f"새로운 패치노트 발견: {note['title']}")
-            
-            # 상세 정보 크롤링
-            data = crawl_update_detail(note["id"])
+
+            # 상세 정보 크롤링 (재시도 로직 포함)
+            data = None
+            for attempt in range(1, MAX_RETRIES + 1):
+                data = crawl_update_detail(note["id"])
+                if data:
+                    break
+
+                if attempt < MAX_RETRIES:
+                    logger.warning(f"상세 정보 크롤링 실패 (시도 {attempt}/{MAX_RETRIES}): {note['title']} - {RETRY_DELAY}초 후 재시도...")
+                    import time
+                    time.sleep(RETRY_DELAY)
+                else:
+                    logger.error(f"상세 정보 크롤링 최종 실패 ({MAX_RETRIES}회 시도): {note['title']}")
+
             if not data:
-                logger.warning(f"상세 정보 크롤링 실패: {note['title']}")
                 continue
-                
+
             # DB에 저장
             if save_patch_data(data):
                 new_count += 1
