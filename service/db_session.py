@@ -27,8 +27,8 @@ class KSTDateTime(types.TypeDecorator):
         return None
 
 # 데이터베이스 연결 문자열
-SQLALCHEMY_DATABASE_URL = "postgresql://super:Wkwkd119%21%21@46.250.250.135:5444/rank_data"
-KADAN_DATABASE_URL = "postgresql://super:Wkwkd119%21%21@46.250.250.135:5444/kadan"
+SQLALCHEMY_DATABASE_URL = "postgresql://super:Wkwkd119%21%21@localhost:5444/rank_data"
+KADAN_DATABASE_URL = "postgresql://super:Wkwkd119%21%21@localhost:5444/kadan"
 
 # rank_data 데이터베이스 엔진 생성
 engine = create_engine(
